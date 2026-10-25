@@ -2,8 +2,7 @@ const DEFAULT_BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE";
 const DEFAULT_GEMINI_KEY = "PASTE_YOUR_GEMINI_KEY_HERE";
 const CHANNEL_USERNAME = "@SrBotsClub";
 
-const MEMORY_CACHE = new Map();
-let CACHED_MODELS = null;
+const SONG_CACHE = new Map();
 
 export default {
   async fetch(request, env) {
@@ -24,12 +23,10 @@ export default {
         `https://api.telegram.org/bot${botToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}&drop_pending_updates=true`
       );
       const tgData = await tgRes.json();
-      const geminiTest = await testGeminiKey(geminiKey);
 
-      let html = `<h2>${tgData.ok ? "✅ Bot Webhook Connected!" : "❌ Telegram Token Error"}</h2>`;
+      let html = `<h2>${tgData.ok ? "✅ Music Downloader Bot Live!" : "❌ Telegram Token Error"}</h2>`;
       html += `<p><b>Telegram Status:</b> ${tgData.ok ? "Connected to " + CHANNEL_USERNAME : JSON.stringify(tgData)}</p>`;
-      html += `<p><b>Gemini Audio AI Key Status:</b> ${geminiTest}</p>`;
-      html += `<p>Now go to Telegram and try sending a song name, YouTube Shorts link, or Voice Note!</p>`;
+      html += `<p>Open Telegram and type any song name to test the Top-5 Button Picker & Direct MP3 Player!</p>`;
 
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -45,99 +42,29 @@ export default {
     }
 
     return new Response(
-      `🎵 BGM Identifier Bot Server is Running!\nVisit ${url.origin}/setup to check status & connect your Telegram Webhook.`,
+      `🎵 Instant MP3 Music Downloader Bot is Running!\nVisit ${url.origin}/setup to verify webhook.`,
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
   }
 };
-
-async function getAvailableFlashModels(geminiKey) {
-  if (CACHED_MODELS && CACHED_MODELS.length > 0) return CACHED_MODELS;
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const allModels = (data.models || [])
-        .filter(
-          m =>
-            Array.isArray(m.supportedGenerationMethods) &&
-            m.supportedGenerationMethods.includes("generateContent") &&
-            m.name.includes("gemini") &&
-            !m.name.includes("tts") &&
-            !m.name.includes("image") &&
-            !m.name.includes("embedding") &&
-            !m.name.includes("robotics") &&
-            !m.name.includes("computer-use") &&
-            !m.name.includes("1.5")
-        )
-        .map(m => m.name.replace(/^models\//, ""));
-
-      allModels.sort((a, b) => {
-        const aScore = a.includes("flash") ? 0 : 1;
-        const bScore = b.includes("flash") ? 0 : 1;
-        return aScore - bScore;
-      });
-
-      if (allModels.length > 0) {
-        CACHED_MODELS = allModels.slice(0, 6);
-        return CACHED_MODELS;
-      }
-    }
-  } catch (e) {}
-  return [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3-flash-preview",
-    "gemini-2.0-flash"
-  ];
-}
-
-async function testGeminiKey(geminiKey) {
-  if (!geminiKey || geminiKey.includes("PASTE_YOUR")) {
-    return "⚠️ GEMINI_KEY is not set in Runtime Variables.";
-  }
-  const models = await getAvailableFlashModels(geminiKey);
-  const errors = [];
-  for (const model of models) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contents: [{ parts: [{ text: "Reply OK" }] }] })
-        }
-      );
-      const data = await res.json();
-      if (res.ok && data.candidates) {
-        return `✅ Working! (Active model: ${model})`;
-      }
-      errors.push(`${model}: ${data.error?.message || res.status}`);
-    } catch (e) {
-      errors.push(`${model}: ${e.message}`);
-    }
-  }
-  return `❌ Error (${errors[0] || "No models available"})`;
-}
 
 async function handleUpdate(update, botToken, geminiKey) {
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message.chat.id;
     const userId = cb.from.id;
+    const data = cb.data || "";
 
-    if (cb.data === "verify_join") {
+    if (data === "verify_join") {
       const joined = await isUserInChannel(botToken, userId);
       if (joined) {
         await tgApi(botToken, "answerCallbackQuery", {
           callback_query_id: cb.id,
-          text: "✅ Verified! You now have full access."
+          text: "✅ Verified! Send any song name now."
         });
         await tgApi(botToken, "sendMessage", {
           chat_id: chatId,
-          text: "🎉 *Access Unlocked!*\n\nSend me any of the following to find the background song & get the playable audio:\n• 🎤 A *Voice Note* or *Audio Clip*\n• 🎬 A short *Video Clip*\n• 🔗 An *Instagram Reel* or *YouTube Shorts* link\n• 📝 Or type any *Lyrics / Song Name*",
+          text: "🎉 *Access Unlocked!*\n\nType any *Song Name*, *Singer Name*, *Movie Name*, or *Lyrics* below to get the playable MP3:",
           parse_mode: "Markdown"
         });
       } else {
@@ -147,6 +74,45 @@ async function handleUpdate(update, botToken, geminiKey) {
           show_alert: true
         });
       }
+      return;
+    }
+
+    if (data.startsWith("dl|")) {
+      await tgApi(botToken, "answerCallbackQuery", {
+        callback_query_id: cb.id,
+        text: "🎧 Preparing your playable MP3..."
+      });
+
+      const parts = data.split("|");
+      const songId = parts[1] || "";
+
+      let fallbackQuery = "";
+      const rows = cb.message?.reply_markup?.inline_keyboard || [];
+      for (const row of rows) {
+        for (const btn of row) {
+          if (btn.callback_data === data && btn.text) {
+            fallbackQuery = btn.text.replace(/^🎵\s*\d+\.\s*/, "").trim();
+          }
+        }
+      }
+
+      const loadingMsg = await tgApi(botToken, "sendMessage", {
+        chat_id: chatId,
+        text: "⬇️ _Uploading playable MP3 track to Telegram..._",
+        parse_mode: "Markdown"
+      });
+
+      let track = SONG_CACHE.get(songId);
+      if (!track && songId) {
+        track = await fetchSaavnSongById(songId);
+      }
+      if (!track && fallbackQuery) {
+        const list = await searchTopSongs(fallbackQuery, 1);
+        track = list[0] || null;
+      }
+
+      await sendPlayableMp3(botToken, chatId, loadingMsg.result?.message_id, track);
+      return;
     }
     return;
   }
@@ -163,7 +129,7 @@ async function handleUpdate(update, botToken, geminiKey) {
     const channelHandle = CHANNEL_USERNAME.replace("@", "");
     await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
-      text: `🔒 *Welcome to BGM & Song Finder Bot!*\n\nTo keep this bot 100% free and unlock instant song identification + MP3 downloads, please join our official channel ${CHANNEL_USERNAME} first:`,
+      text: `🔒 *Welcome to Instant MP3 Music Bot!*\n\nTo keep this bot 100% free and download unlimited 320kbps MP3 songs, please join our official channel ${CHANNEL_USERNAME} first:`,
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
@@ -178,91 +144,294 @@ async function handleUpdate(update, botToken, geminiKey) {
   if (text === "/start" || text === "/help") {
     await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
-      text: "🎵 *BGM Identifier & Full Song Bot*\n\nSend me any of these and I will find the background song + send the playable audio:\n\n1️⃣ *Voice Note / Audio File* (even with someone speaking over the music)\n2️⃣ *Video Clip* (under 15 MB)\n3️⃣ *Instagram Reel / YouTube Shorts Link*\n4️⃣ *Any Lyrics or Song Title*\n\n_Send a clip, link, or song name now to try it!_",
+      text: "🎵 *Instant 320kbps MP3 Music Downloader*\n\nJust type and send:\n• *Any Song Name* (e.g., _Pal Pal Dil Ke Paas_, _Kesariya_, _Blinding Lights_)\n• *Song + Singer Name* (e.g., _Tum Hi Ho Arijit Singh_)\n• *Any Line of Lyrics* or a *YouTube Link*\n\nI will show you the top matching tracks—tap any button to get the directly playable `.mp3` in chat!",
       parse_mode: "Markdown"
     });
     return;
   }
 
-  if (text === "/status") {
-    const geminiStatus = await testGeminiKey(geminiKey);
+  if (!text) return;
+
+  const statusMsg = await tgApi(botToken, "sendMessage", {
+    chat_id: chatId,
+    text: `🔍 _Searching top matches for "${escapeMd(text)}"..._`,
+    parse_mode: "Markdown"
+  });
+
+  let searchQuery = text;
+
+  if (/https?:\/\/[^\s]+/i.test(text)) {
+    const extracted = await extractTitleFromUrl(text);
+    if (extracted) searchQuery = extracted;
+  }
+
+  let songs = await searchTopSongs(searchQuery, 5);
+
+  if (songs.length === 0 && geminiKey && !geminiKey.includes("PASTE_YOUR")) {
+    const aiGuess = await guessSongFromLyricsWithGemini(geminiKey, text);
+    if (aiGuess) {
+      songs = await searchTopSongs(aiGuess, 5);
+    }
+  }
+
+  if (statusMsg.result?.message_id) {
+    await tgApi(botToken, "deleteMessage", {
+      chat_id: chatId,
+      message_id: statusMsg.result.message_id
+    });
+  }
+
+  if (songs.length === 0) {
     await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
-      text: `⚙️ *Bot Diagnostic Status*\n\n• *Channel:* ${CHANNEL_USERNAME}\n• *AI Key Status:* ${escapeMd(geminiStatus)}`,
+      text: "😕 *No matching songs found.*\n\nTry typing the song title along with the singer or movie name (for example: `Pal Pal Dil Ke Paas Arijit`).",
       parse_mode: "Markdown"
     });
     return;
   }
 
-  const mediaObj = msg.voice || msg.audio || msg.video || msg.video_note || msg.document;
+  const keyboard = [];
+  let listText = `🎶 *Select the exact song to download MP3:*\n\n`;
 
-  if (mediaObj) {
-    const metaTitle = msg.audio?.title || "";
-    const metaPerformer = msg.audio?.performer || "";
-    const metaFileName = (msg.audio?.file_name || msg.document?.file_name || "")
-      .replace(/\.(mp3|m4a|wav|ogg|flac|mp4|mkv)$/i, "")
-      .replace(/[_-]+/g, " ")
-      .replace(/\(official.*?\)|\[official.*?\]|lyrics|video|audio/gi, "")
-      .trim();
+  songs.forEach((song, idx) => {
+    const num = idx + 1;
+    SONG_CACHE.set(song.id, song);
+    const yearStr = song.year ? ` (${song.year})` : "";
+    listText += `*${num}.* *${escapeMd(song.title)}* — ${escapeMd(song.artist)}${yearStr}\n`;
+    const btnLabel = `🎵 ${num}. ${song.title} — ${song.artist}`.slice(0, 60);
+    keyboard.push([{ text: btnLabel, callback_data: `dl|${song.id}` }]);
+  });
 
-    const combinedMeta = `${metaPerformer} ${metaTitle}`.trim() || metaFileName;
-    const isGenericFileName = /^(audio|voice|video|vid|aud|doc|file|record|clip|whatsapp|telegram)[0-9_\s-]*$/i.test(combinedMeta);
+  listText += `\n👇 _Tap a button below for instant playable MP3:_`;
 
-    if (combinedMeta && combinedMeta.length > 2 && !isGenericFileName && !msg.voice && !msg.video_note) {
-      const statusMsg = await tgApi(botToken, "sendMessage", {
-        chat_id: chatId,
-        text: "🎧 _Matching audio track details..._",
-        parse_mode: "Markdown"
-      });
-      await deliverSongResult(botToken, chatId, statusMsg.result?.message_id, {
-        identified: true,
-        title: metaTitle || metaFileName,
-        artist: metaPerformer || "Artist",
-        search_query: combinedMeta
-      });
-      return;
+  await tgApi(botToken, "sendMessage", {
+    chat_id: chatId,
+    text: listText,
+    parse_mode: "Markdown",
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
+  if (!track || !track.audioUrl) {
+    if (loadingMsgId) {
+      await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
     }
-
-    if (mediaObj.file_size && mediaObj.file_size > 15 * 1024 * 1024) {
-      await tgApi(botToken, "sendMessage", {
-        chat_id: chatId,
-        text: "⚠️ *File Too Large (Over 15 MB)*\n\nPlease send a shorter 10–15 second clip, record a quick voice note of the audio, or paste the Reel/Shorts link directly!",
-        parse_mode: "Markdown"
-      });
-      return;
-    }
-
-    const statusMsg = await tgApi(botToken, "sendMessage", {
+    await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
-      text: "🎧 _Listening to background audio & isolating the music track..._",
-      parse_mode: "Markdown"
+      text: "⚠️ Could not fetch the audio stream for this track. Please try another version from the list!"
     });
-
-    const mediaResult = await identifyFromTelegramFile(botToken, geminiKey, mediaObj);
-    await deliverSongResult(botToken, chatId, statusMsg.result?.message_id, mediaResult);
     return;
   }
 
-  if (text) {
-    const cacheKey = normalizeCacheKey(text);
-    if (MEMORY_CACHE.has(cacheKey)) {
-      const cached = MEMORY_CACHE.get(cacheKey);
-      await deliverSongResult(botToken, chatId, null, cached);
-      return;
+  const finalTitle = track.title || "Track";
+  const finalArtist = track.artist || "Artist";
+  const safeFileName = `${finalTitle} - ${finalArtist}`.replace(/[\\/:*?"<>|]/g, "").slice(0, 80) + ".mp3";
+  const channelHandle = CHANNEL_USERNAME.replace("@", "");
+
+  try {
+    const audioRes = await fetch(track.audioUrl);
+    if (!audioRes.ok) throw new Error("Audio CDN fetch failed");
+    const audioBuffer = await audioRes.arrayBuffer();
+
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("title", finalTitle);
+    form.append("performer", finalArtist);
+    if (track.duration) {
+      form.append("duration", String(track.duration));
+    }
+    form.append(
+      "caption",
+      `🎵 *${escapeMd(finalTitle)}*\n🎤 ${escapeMd(finalArtist)}${track.album ? `\n💿 _${escapeMd(track.album)}_` : ""}\n\n⚡ _Downloaded via ${CHANNEL_USERNAME}_`
+    );
+    form.append("parse_mode", "Markdown");
+    form.append(
+      "reply_markup",
+      JSON.stringify({
+        inline_keyboard: [
+          [{ text: `📢 Join ${CHANNEL_USERNAME}`, url: `https://t.me/${channelHandle}` }]
+        ]
+      })
+    );
+
+    if (track.image) {
+      try {
+        const thumbRes = await fetch(track.image);
+        if (thumbRes.ok) {
+          const thumbBuf = await thumbRes.arrayBuffer();
+          form.append("thumbnail", new Blob([thumbBuf], { type: "image/jpeg" }), "cover.jpg");
+        }
+      } catch (e) {}
     }
 
-    const statusMsg = await tgApi(botToken, "sendMessage", {
-      chat_id: chatId,
-      text: "🔍 _Searching & extracting song details..._",
-      parse_mode: "Markdown"
+    form.append("audio", new Blob([audioBuffer], { type: "audio/mpeg" }), safeFileName);
+
+    const uploadRes = await fetch(`https://api.telegram.org/bot${botToken}/sendAudio`, {
+      method: "POST",
+      body: form
     });
+    const uploadData = await uploadRes.json();
 
-    const textResult = await identifyFromTextOrUrl(geminiKey, text);
-    if (textResult && textResult.search_query) {
-      MEMORY_CACHE.set(cacheKey, textResult);
+    if (loadingMsgId) {
+      await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
     }
-    await deliverSongResult(botToken, chatId, statusMsg.result?.message_id, textResult);
+
+    if (uploadData.ok) return;
+  } catch (err) {
+    console.error("FormData MP3 upload fallback:", err);
   }
+
+  if (loadingMsgId) {
+    await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
+  }
+  await tgApi(botToken, "sendAudio", {
+    chat_id: chatId,
+    audio: track.audioUrl,
+    title: finalTitle,
+    performer: finalArtist,
+    caption: `🎵 *${escapeMd(finalTitle)}* — ${escapeMd(finalArtist)}\n⚡ _via ${CHANNEL_USERNAME}_`,
+    parse_mode: "Markdown"
+  });
+}
+
+async function searchTopSongs(query, limit = 5) {
+  const saavnEndpoints = [
+    `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
+    `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
+    `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
+    `https://saavnapi-nine.vercel.app/result/?query=${encodeURIComponent(query)}`
+  ];
+
+  for (const endpoint of saavnEndpoints) {
+    try {
+      const res = await fetch(endpoint);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const rawList = Array.isArray(json)
+        ? json
+        : (json.data?.results || json.results || []);
+
+      if (rawList.length > 0) {
+        const parsed = [];
+        for (const song of rawList.slice(0, limit)) {
+          const item = normalizeSaavnSong(song);
+          if (item && item.audioUrl) parsed.push(item);
+        }
+        if (parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+  }
+
+  return [];
+}
+
+async function fetchSaavnSongById(songId) {
+  const endpoints = [
+    `https://saavn.sumit.co/api/songs/${encodeURIComponent(songId)}`,
+    `https://saavn.dev/api/songs/${encodeURIComponent(songId)}`
+  ];
+  for (const ep of endpoints) {
+    try {
+      const res = await fetch(ep);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const songObj = Array.isArray(json.data) ? json.data[0] : (json.data || json[0]);
+      if (songObj) {
+        const item = normalizeSaavnSong(songObj);
+        if (item && item.audioUrl) return item;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+function normalizeSaavnSong(song) {
+  const downloads = song.downloadUrl || song.download_url || [];
+  let bestAudio = null;
+  if (Array.isArray(downloads) && downloads.length > 0) {
+    const high = downloads[downloads.length - 1];
+    bestAudio = high?.url || high?.link;
+  } else if (typeof song.media_url === "string") {
+    bestAudio = song.media_url;
+  }
+
+  const images = song.image || [];
+  let bestImage = null;
+  if (Array.isArray(images) && images.length > 0) {
+    bestImage = images[images.length - 1]?.url || images[images.length - 1]?.link;
+  } else if (typeof song.image === "string") {
+    bestImage = song.image;
+  }
+
+  const id = String(song.id || Math.random().toString(36).slice(2, 10));
+  const title = cleanHtmlEntities(song.name || song.title || song.song || "Track");
+  const artist = cleanHtmlEntities(
+    song.artists?.primary?.map(a => a.name).join(", ") ||
+    song.primaryArtists ||
+    song.singers ||
+    "Artist"
+  );
+  const album = cleanHtmlEntities(song.album?.name || song.album || "");
+  const year = song.year || "";
+  const duration = song.duration ? Number(song.duration) : 0;
+
+  return { id, title, artist, album, year, duration, image: bestImage, audioUrl: bestAudio };
+}
+
+async function extractTitleFromUrl(text) {
+  const urlMatch = text.match(/https?:\/\/[^\s]+/i);
+  if (!urlMatch) return null;
+  const targetUrl = urlMatch[0];
+  const ytIdMatch = targetUrl.match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  const lookupUrl = ytIdMatch ? `https://www.youtube.com/watch?v=${ytIdMatch[1]}` : targetUrl;
+
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(lookupUrl)}&format=json`
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data.title) {
+        return data.title
+          .replace(/#[^\s#]+/g, "")
+          .replace(/\(official.*?\)|\[official.*?\]/gi, "")
+          .replace(/\b(shorts|short|trending|viral|status|bgm|full screen|4k|hd|lyrics|lyrical|video|audio)\b/gi, "")
+          .replace(/[|•~_]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function guessSongFromLyricsWithGemini(geminiKey, text) {
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `Identify the exact song title and singer from this lyric or query: "${text}". Reply with ONLY the song title and artist name (max 6 words), nothing else.`
+                }
+              ]
+            }
+          ]
+        })
+      }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      return (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+    }
+  } catch (e) {}
+  return null;
 }
 
 async function isUserInChannel(botToken, userId) {
@@ -277,367 +446,6 @@ async function isUserInChannel(botToken, userId) {
   } catch (e) {
     return true;
   }
-}
-
-async function identifyFromTelegramFile(botToken, geminiKey, mediaObj) {
-  try {
-    const fileRes = await tgApi(botToken, "getFile", { file_id: mediaObj.file_id });
-    if (!fileRes.ok || !fileRes.result?.file_path) {
-      return { identified: false };
-    }
-
-    const filePath = fileRes.result.file_path;
-    const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
-    const audioResponse = await fetch(downloadUrl);
-    const arrayBuffer = await audioResponse.arrayBuffer();
-    const base64Audio = arrayBufferToBase64(arrayBuffer);
-
-    let mimeType = mediaObj.mime_type || "audio/ogg";
-    if (filePath.endsWith(".mp4")) mimeType = "video/mp4";
-    else if (filePath.endsWith(".mp3")) mimeType = "audio/mp3";
-    else if (filePath.endsWith(".ogg") || filePath.endsWith(".oga")) mimeType = "audio/ogg";
-
-    const prompt = `You are an expert music & BGM recognition engine (like Shazam).
-Listen carefully to this clip. Even if someone is talking in the foreground, focus on:
-1. Any background music (BGM), melody, beat, or instrumental hook.
-2. Any audible sung lyrics (in Hindi, English, Punjabi, Tamil, Spanish, or any language).
-3. Any recognizable movie dialogue or viral audio trend.
-
-Return ONLY a raw JSON object (no markdown formatting) with these exact fields:
-{
-  "identified": true,
-  "title": "Exact Song Name",
-  "artist": "Singer / Composer / Movie Name",
-  "lyrics_heard": "Short snippet of lyrics or description heard",
-  "confidence": "High / Medium",
-  "search_query": "Song Name Artist Name"
-}
-If there is truly zero recognizable song or lyrics, return {"identified": false, "lyrics_heard": "", "search_query": ""}.`;
-
-    const parts = [
-      { text: prompt },
-      { inline_data: { mime_type: mimeType, data: base64Audio } }
-    ];
-
-    return await callGeminiJson(geminiKey, parts);
-  } catch (err) {
-    return { identified: false };
-  }
-}
-
-async function identifyFromTextOrUrl(geminiKey, text) {
-  let metadataContext = "";
-  let rawVideoTitle = "";
-  let rawAuthor = "";
-  const urlMatch = text.match(/https?:\/\/[^\s]+/i);
-
-  if (urlMatch) {
-    const targetUrl = urlMatch[0];
-    const ytIdMatch = targetUrl.match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-    const lookupUrl = ytIdMatch
-      ? `https://www.youtube.com/watch?v=${ytIdMatch[1]}`
-      : targetUrl;
-
-    const oembedEndpoints = [
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(lookupUrl)}&format=json`,
-      `https://noembed.com/embed?url=${encodeURIComponent(lookupUrl)}`
-    ];
-
-    for (const ep of oembedEndpoints) {
-      try {
-        const oembedRes = await fetch(ep);
-        if (oembedRes.ok) {
-          const oembed = await oembedRes.json();
-          if (oembed.title) {
-            rawVideoTitle = oembed.title;
-            rawAuthor = oembed.author_name || "";
-            metadataContext += `Video Title: ${oembed.title} | Channel: ${rawAuthor}\n`;
-            break;
-          }
-        }
-      } catch (e) {}
-    }
-
-    if (!rawVideoTitle) {
-      try {
-        const pageRes = await fetch(targetUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
-          }
-        });
-        if (pageRes.ok) {
-          const html = (await pageRes.text()).slice(0, 30000);
-          const titleMatch =
-            html.match(/property=["']og:title["']\s+content=["']([^"']+)["']/i) ||
-            html.match(/<title[^>]*>([^<]+)<\/title>/i);
-          const descMatch =
-            html.match(/property=["']og:description["']\s+content=["']([^"']+)["']/i) ||
-            html.match(/name=["']description["']\s+content=["']([^"']+)["']/i);
-          const audioMatch = html.match(/audio_title["']?\s*:\s*["']([^"']+)["']/i);
-          if (titleMatch) {
-            rawVideoTitle = cleanHtmlEntities(titleMatch[1]);
-            metadataContext += `Page Title: ${rawVideoTitle}\n`;
-          }
-          if (descMatch) metadataContext += `Description: ${cleanHtmlEntities(descMatch[1])}\n`;
-          if (audioMatch) metadataContext += `Audio Tag: ${cleanHtmlEntities(audioMatch[1])}\n`;
-        }
-      } catch (e) {}
-    }
-
-    if (!metadataContext.trim()) {
-      return { identified: false, is_private_reel: true };
-    }
-  }
-
-  const prompt = `You are a music identification expert. Based on the user input and extracted link metadata below, identify the most likely song title and artist.
-User Input: ${text}
-Extracted Link Metadata: ${metadataContext || "Direct text/lyrics search"}
-
-Return ONLY a raw JSON object (no markdown formatting):
-{
-  "identified": true,
-  "title": "Exact Song Name",
-  "artist": "Artist or Movie Name",
-  "lyrics_heard": "",
-  "confidence": "High",
-  "search_query": "Exact Song Name Artist"
-}`;
-
-  const aiResult = await callGeminiJson(geminiKey, [{ text: prompt }]);
-  if (aiResult && (aiResult.identified || aiResult.search_query)) {
-    return aiResult;
-  }
-
-  if (rawVideoTitle) {
-    const cleanedTitle = cleanVideoTitleForSongSearch(rawVideoTitle);
-    if (cleanedTitle) {
-      return {
-        identified: true,
-        title: cleanedTitle,
-        artist: rawAuthor || "YouTube Audio",
-        search_query: cleanedTitle
-      };
-    }
-  }
-
-  if (!urlMatch && text.length >= 2) {
-    return {
-      identified: true,
-      title: text,
-      artist: "",
-      search_query: text
-    };
-  }
-
-  return { identified: false };
-}
-
-function cleanVideoTitleForSongSearch(title) {
-  return title
-    .replace(/#[^\s#]+/g, "")
-    .replace(/\(official.*?\)|\[official.*?\]/gi, "")
-    .replace(/\b(shorts|short|trending|viral|status|whatsapp|reels|reel|bgm|ringtone|full screen|4k|hd|lyrics|lyrical|video|audio)\b/gi, "")
-    .replace(/[|•~_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-async function callGeminiJson(geminiKey, parts) {
-  if (!geminiKey || geminiKey.includes("PASTE_YOUR")) {
-    return { identified: false };
-  }
-  const models = await getAvailableFlashModels(geminiKey);
-  for (const model of models) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: { temperature: 0.1 }
-          })
-        }
-      );
-      if (!res.ok) continue;
-      const data = await res.json();
-      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-    } catch (e) {}
-  }
-  return { identified: false };
-}
-
-async function deliverSongResult(botToken, chatId, statusMsgId, info) {
-  if (statusMsgId) {
-    await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: statusMsgId });
-  }
-
-  if (info && info.is_private_reel) {
-    await tgApi(botToken, "sendMessage", {
-      chat_id: chatId,
-      text: "🔒 *Instagram Hid the Audio Tag on This Reel*\n\nTo identify the background music on this specific Reel:\n1️⃣ Tap the *Microphone icon* in Telegram and record 8–10 seconds of the Reel playing, OR\n2️⃣ Send the short video/audio clip directly here!\n\n_I will listen to the audio directly and pull the song for you._",
-      parse_mode: "Markdown"
-    });
-    return;
-  }
-
-  if (!info || (!info.identified && !info.search_query)) {
-    await tgApi(botToken, "sendMessage", {
-      chat_id: chatId,
-      text: "😕 *Could Not Catch That Track*\n\nTry sending a clearer 10-second audio clip where the music or chorus is audible, or type a few words of the lyrics!",
-      parse_mode: "Markdown"
-    });
-    return;
-  }
-
-  const query = info.search_query || `${info.title || ""} ${info.artist || ""}`.trim();
-  const trackData = await fetchFullSongFromCdn(query);
-
-  const finalTitle = trackData?.title || info.title || query;
-  const finalArtist = trackData?.artist || info.artist || "Artist";
-  const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(finalTitle + " " + finalArtist)}`;
-  const spotifySearchUrl = `https://open.spotify.com/search/${encodeURIComponent(finalTitle + " " + finalArtist)}`;
-  const channelHandle = CHANNEL_USERNAME.replace("@", "");
-
-  let caption = `🎵 *Song Identified!*\n\n`;
-  caption += `📌 *Title:* ${escapeMd(finalTitle)}\n`;
-  caption += `🎤 *Artist:* ${escapeMd(finalArtist)}\n`;
-  if (trackData?.album) caption += `💿 *Album:* ${escapeMd(trackData.album)}\n`;
-  if (info.lyrics_heard) caption += `💬 *Matched Audio:* _"${escapeMd(info.lyrics_heard)}"_\n`;
-  caption += `\n⚡ _Powered by ${CHANNEL_USERNAME}_`;
-
-  const buttons = {
-    inline_keyboard: [
-      [
-        { text: "▶️ Watch on YouTube", url: ytSearchUrl },
-        { text: "🎧 Spotify", url: spotifySearchUrl }
-      ],
-      [{ text: `📢 Join ${CHANNEL_USERNAME}`, url: `https://t.me/${channelHandle}` }]
-    ]
-  };
-
-  if (trackData?.image) {
-    await tgApi(botToken, "sendPhoto", {
-      chat_id: chatId,
-      photo: trackData.image,
-      caption: caption,
-      parse_mode: "Markdown",
-      reply_markup: buttons
-    });
-  } else {
-    await tgApi(botToken, "sendMessage", {
-      chat_id: chatId,
-      text: caption,
-      parse_mode: "Markdown",
-      reply_markup: buttons
-    });
-  }
-
-  if (trackData?.audioUrl) {
-    await tgApi(botToken, "sendAudio", {
-      chat_id: chatId,
-      audio: trackData.audioUrl,
-      title: finalTitle,
-      performer: finalArtist,
-      caption: `🎧 *${escapeMd(finalTitle)}* — ${escapeMd(finalArtist)}\n_via ${CHANNEL_USERNAME}_`,
-      parse_mode: "Markdown"
-    });
-  }
-}
-
-async function fetchFullSongFromCdn(query) {
-  const saavnEndpoints = [
-    `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=1`,
-    `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=1`,
-    `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=1`,
-    `https://saavnapi-nine.vercel.app/result/?query=${encodeURIComponent(query)}`,
-    `https://jiosaavn-api-lemon.vercel.app/result/?query=${encodeURIComponent(query)}`
-  ];
-
-  for (const endpoint of saavnEndpoints) {
-    try {
-      const res = await fetch(endpoint);
-      if (!res.ok) continue;
-      const json = await res.json();
-      const results = Array.isArray(json)
-        ? json
-        : (json.data?.results || json.results || []);
-
-      if (results.length > 0) {
-        const song = results[0];
-        const downloads = song.downloadUrl || song.download_url || [];
-        let bestAudio = null;
-        if (Array.isArray(downloads) && downloads.length > 0) {
-          bestAudio = downloads[downloads.length - 1]?.url || downloads[downloads.length - 1]?.link;
-        } else if (typeof song.media_url === "string") {
-          bestAudio = song.media_url;
-        }
-
-        const images = song.image || [];
-        let bestImage = null;
-        if (Array.isArray(images) && images.length > 0) {
-          bestImage = images[images.length - 1]?.url || images[images.length - 1]?.link;
-        } else if (typeof song.image === "string") {
-          bestImage = song.image;
-        }
-
-        if (bestAudio) {
-          return {
-            title: cleanHtmlEntities(song.name || song.title || song.song || ""),
-            artist: cleanHtmlEntities(
-              song.artists?.primary?.map(a => a.name).join(", ") ||
-              song.primaryArtists ||
-              song.singers ||
-              ""
-            ),
-            album: cleanHtmlEntities(song.album?.name || song.album || ""),
-            image: bestImage,
-            audioUrl: bestAudio
-          };
-        }
-      }
-    } catch (e) {}
-  }
-
-  try {
-    const itunesRes = await fetch(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`
-    );
-    if (itunesRes.ok) {
-      const itunesData = await itunesRes.json();
-      if (itunesData.results && itunesData.results.length > 0) {
-        const item = itunesData.results[0];
-        return {
-          title: item.trackName,
-          artist: item.artistName,
-          album: item.collectionName,
-          image: item.artworkUrl100 ? item.artworkUrl100.replace("100x100bb", "600x600bb") : null,
-          audioUrl: item.previewUrl || null
-        };
-      }
-    }
-  } catch (e) {}
-
-  return null;
-}
-
-function arrayBufferToBase64(buffer) {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function normalizeCacheKey(text) {
-  return text.toLowerCase().replace(/\?.*$/, "").trim();
 }
 
 function cleanHtmlEntities(str) {
