@@ -3,6 +3,7 @@ const DEFAULT_GEMINI_KEY = "PASTE_YOUR_GEMINI_KEY_HERE";
 const CHANNEL_USERNAME = "@SrBotsClub";
 
 const MEMORY_CACHE = new Map();
+let CACHED_MODELS = null;
 
 export default {
   async fetch(request, env) {
@@ -50,12 +51,55 @@ export default {
   }
 };
 
+async function getAvailableFlashModels(geminiKey) {
+  if (CACHED_MODELS && CACHED_MODELS.length > 0) return CACHED_MODELS;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const allModels = (data.models || [])
+        .filter(
+          m =>
+            Array.isArray(m.supportedGenerationMethods) &&
+            m.supportedGenerationMethods.includes("generateContent") &&
+            m.name.includes("gemini") &&
+            !m.name.includes("tts") &&
+            !m.name.includes("image") &&
+            !m.name.includes("embedding") &&
+            !m.name.includes("robotics") &&
+            !m.name.includes("computer-use") &&
+            !m.name.includes("1.5")
+        )
+        .map(m => m.name.replace(/^models\//, ""));
+
+      allModels.sort((a, b) => {
+        const aScore = a.includes("flash") ? 0 : 1;
+        const bScore = b.includes("flash") ? 0 : 1;
+        return aScore - bScore;
+      });
+
+      if (allModels.length > 0) {
+        CACHED_MODELS = allModels.slice(0, 6);
+        return CACHED_MODELS;
+      }
+    }
+  } catch (e) {}
+  return [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-2.0-flash"
+  ];
+}
+
 async function testGeminiKey(geminiKey) {
   if (!geminiKey || geminiKey.includes("PASTE_YOUR")) {
-    return "⚠️ GEMINI_KEY is not set in Runtime Variables (only in Build variables or missing). Direct song search & YouTube links will still work, but add GEMINI_KEY in the top Variables & Secrets section for Voice Note recognition!";
+    return "⚠️ GEMINI_KEY is not set in Runtime Variables.";
   }
-  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
-  let lastError = "";
+  const models = await getAvailableFlashModels(geminiKey);
+  const errors = [];
   for (const model of models) {
     try {
       const res = await fetch(
@@ -68,14 +112,14 @@ async function testGeminiKey(geminiKey) {
       );
       const data = await res.json();
       if (res.ok && data.candidates) {
-        return `✅ Working (${model} active!)`;
+        return `✅ Working! (Active model: ${model})`;
       }
-      lastError = data.error?.message || JSON.stringify(data);
+      errors.push(`${model}: ${data.error?.message || res.status}`);
     } catch (e) {
-      lastError = e.message;
+      errors.push(`${model}: ${e.message}`);
     }
   }
-  return `❌ Google API Error: ${lastError}`;
+  return `❌ Error (${errors[0] || "No models available"})`;
 }
 
 async function handleUpdate(update, botToken, geminiKey) {
@@ -402,7 +446,7 @@ async function callGeminiJson(geminiKey, parts) {
   if (!geminiKey || geminiKey.includes("PASTE_YOUR")) {
     return { identified: false };
   }
-  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+  const models = await getAvailableFlashModels(geminiKey);
   for (const model of models) {
     try {
       const res = await fetch(
@@ -508,6 +552,7 @@ async function deliverSongResult(botToken, chatId, statusMsgId, info) {
 
 async function fetchFullSongFromCdn(query) {
   const saavnEndpoints = [
+    `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=1`,
     `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=1`,
     `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=1`,
     `https://saavnapi-nine.vercel.app/result/?query=${encodeURIComponent(query)}`,
