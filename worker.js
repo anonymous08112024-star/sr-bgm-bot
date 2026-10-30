@@ -3,11 +3,13 @@ const DEFAULT_GEMINI_KEY = "PASTE_YOUR_GEMINI_KEY_HERE";
 const CHANNEL_USERNAME = "@SrBotsClub";
 const ADMIN_ID = 5527067319;
 
+// Fast in-memory caches
 const SONG_CACHE = new Map();
 const MEM_USERS = new Set([ADMIN_ID]);
 const MEM_STATS = {
   searches: 0,
-  downloads: 0
+  downloads: 0,
+  joinedAt: new Date().toISOString().slice(0, 10)
 };
 let ADMIN_BROADCAST_MODE = false;
 let CACHED_MODELS = null;
@@ -33,10 +35,10 @@ export default {
       );
       const tgData = await tgRes.json();
 
-      let html = `<h2>${tgData.ok ? "✅ Permanent Database Connected!" : "❌ Telegram Token Error"}</h2>`;
+      let html = `<h2>${tgData.ok ? "✅ SR Music Bot Max V2 Live!" : "❌ Telegram Token Error"}</h2>`;
       html += `<p><b>Telegram Status:</b> ${tgData.ok ? "Connected to " + CHANNEL_USERNAME : JSON.stringify(tgData)}</p>`;
       html += `<p><b>Admin ID Locked To:</b> ${ADMIN_ID}</p>`;
-      html += `<p><b>Permanent KV Storage (BOT_DB):</b> ${db ? "✅ Active & Permanent" : "⚠️ Running in RAM Mode (Bind BOT_DB in Worker Settings -> Bindings)"}</p>`;
+      html += `<p><b>Features Active:</b> Parallel Racing Lyrics, Inline Mode, Slowed+Reverb, Bass Boost, 30s Ringtones, /top Charts, /settings.</p>`;
 
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -52,13 +54,20 @@ export default {
     }
 
     return new Response(
-      `🎵 SR Music Bot Running!\nVisit ${url.origin}/setup to verify webhook.`,
+      `🎵 SR Music Bot V2 Engine Running!\nVisit ${url.origin}/setup to verify webhook.`,
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
   }
 };
 
 async function handleUpdate(update, botToken, geminiKey, db) {
+  // 1. Handle Inline Query Mode (@YourBot song in any chat)
+  if (update.inline_query) {
+    await handleInlineQuery(update.inline_query, botToken);
+    return;
+  }
+
+  // 2. Handle Button Clicks
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message.chat.id;
@@ -85,39 +94,50 @@ async function handleUpdate(update, botToken, geminiKey, db) {
       return;
     }
 
-    if (data === "trending_songs") {
+    if (data === "trending_songs" || data === "nav_charts") {
       await tgApi(botToken, "answerCallbackQuery", {
         callback_query_id: cb.id,
-        text: "🔥 Loading Trending Hits..."
+        text: "🔥 Loading India's Top 10 Weekly Hits..."
       });
-      await runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, "Top Hindi Trending Songs 2026");
+      await sendTopCharts(botToken, chatId);
       return;
     }
 
+    if (data.startsWith("set_quality_")) {
+      const q = data.replace("set_quality_", "");
+      if (db) await db.put(`pref_q_${userId}`, q);
+      await tgApi(botToken, "answerCallbackQuery", {
+        callback_query_id: cb.id,
+        text: `✅ Audio Quality set to: ${q === "128" ? "Data Saver (128kbps)" : "Studio HD (320kbps)"}`
+      });
+      await sendSettingsMenu(botToken, db, chatId, userId, cb.message.message_id);
+      return;
+    }
+
+    // Fast Parallel Racing Lyrics with Dynamic Toast
     if (data.startsWith("lyr|")) {
       await tgApi(botToken, "answerCallbackQuery", {
         callback_query_id: cb.id,
-        text: "📝 Fetching verified lyrics..."
+        text: "⚡ Racing global lyrics servers in parallel..."
       });
 
       const songId = data.slice(4);
       const track = SONG_CACHE.get(songId);
-
       const songTitle = track?.title || "Song";
       const songArtist = (track?.artist && track.artist !== "Artist") ? track.artist : "";
 
-      const loadingMsg = await tgApi(botToken, "sendMessage", {
+      const statusMsg = await tgApi(botToken, "sendMessage", {
         chat_id: chatId,
         text: `⏳ _Searching verified lyrics for "${escapeMd(songTitle)}"..._`,
         parse_mode: "Markdown"
       });
 
-      const lyrics = await getAccurateLyrics(songId, songTitle, songArtist, geminiKey);
+      const lyrics = await getParallelRacingLyrics(db, songId, songTitle, songArtist, geminiKey);
 
-      if (loadingMsg.result?.message_id) {
+      if (statusMsg.result?.message_id) {
         await tgApi(botToken, "deleteMessage", {
           chat_id: chatId,
-          message_id: loadingMsg.result.message_id
+          message_id: statusMsg.result.message_id
         });
       }
 
@@ -129,7 +149,41 @@ async function handleUpdate(update, botToken, geminiKey, db) {
       return;
     }
 
-    // Admin Handlers (Locked to 5527067319)
+    // 1-Tap Vibe Presets: Slowed, Bass Boost, Ringtone, Similar
+    if (data.startsWith("slow|") || data.startsWith("bass|") || data.startsWith("ring|") || data.startsWith("vibe|")) {
+      const type = data.slice(0, 4);
+      const songId = data.slice(5);
+      const track = SONG_CACHE.get(songId);
+      const title = track?.title || "Song";
+      const artist = track?.artist || "";
+
+      let label = "";
+      let query = "";
+
+      if (type === "slow") {
+        label = "🌙 Fetching Slowed + Reverb Lo-Fi version...";
+        query = `${title} ${artist} slowed reverb`;
+      } else if (type === "bass") {
+        label = "🔊 Fetching Bass Boosted Car Subwoofer mix...";
+        query = `${title} ${artist} bass boosted`;
+      } else if (type === "ring") {
+        label = "🔔 Fetching 30-Second Ringtone & Hook...";
+        query = `${title} ${artist} ringtone hook status`;
+      } else if (type === "vibe") {
+        label = "🔀 Discovering similar trending songs...";
+        query = artist ? `${artist} top songs` : `${title} similar songs`;
+      }
+
+      await tgApi(botToken, "answerCallbackQuery", {
+        callback_query_id: cb.id,
+        text: label
+      });
+
+      await runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, query);
+      return;
+    }
+
+    // Admin Panel Actions (Strictly locked to 5527067319)
     if (data.startsWith("admin_")) {
       if (userId !== ADMIN_ID) {
         await tgApi(botToken, "answerCallbackQuery", {
@@ -152,7 +206,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
       if (data === "admin_export_users") {
         await tgApi(botToken, "answerCallbackQuery", {
           callback_query_id: cb.id,
-          text: "📥 Exporting user list..."
+          text: "📥 Exporting user database..."
         });
         await exportUsersFile(botToken, db, chatId);
         return;
@@ -167,7 +221,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         });
         await tgApi(botToken, "sendMessage", {
           chat_id: chatId,
-          text: "📢 *Admin Broadcast Mode Active*\n\nSend or forward *any message* right now (text, photo, video, audio, or post with buttons) and I will broadcast it to all bot users!\n\n_Tap Cancel below if you change your mind._",
+          text: "📢 *Admin Broadcast Mode Active*\n\nSend or forward *any message* right now (text, photo, audio, or post with buttons) and I will broadcast it to all bot users!\n\n_Tap Cancel below if you change your mind._",
           parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [[{ text: "❌ Cancel Broadcast", callback_data: "admin_broadcast_cancel" }]]
@@ -211,8 +265,10 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         parse_mode: "Markdown"
       });
 
+      const userPrefQ = db ? await db.get(`pref_q_${userId}`) : "320";
+
       if (!track?.audioUrl && track) {
-        track = await resolveAudioForTrack(track);
+        track = await resolveAudioForTrack(track, userPrefQ);
       }
 
       await sendPlayableMp3(botToken, chatId, loadingMsg.result?.message_id, track);
@@ -221,6 +277,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
     return;
   }
 
+  // 3. Handle Messages
   const msg = update.message;
   if (!msg || !msg.chat) return;
 
@@ -292,15 +349,70 @@ async function handleUpdate(update, botToken, geminiKey, db) {
     return;
   }
 
+  if (text === "/top" || text === "/charts") {
+    await sendTopCharts(botToken, chatId);
+    return;
+  }
+
+  if (text === "/settings" || text === "/quality") {
+    await sendSettingsMenu(botToken, db, chatId, userId, null);
+    return;
+  }
+
   if (!text) return;
 
   await runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text);
 }
 
+// Inline Query Engine (@YourBot song in any chat)
+async function handleInlineQuery(inlineQuery, botToken) {
+  const query = (inlineQuery.query || "").trim();
+  const queryId = inlineQuery.id;
+
+  if (!query) {
+    await tgApi(botToken, "answerInlineQuery", {
+      inline_query_id: queryId,
+      results: [],
+      switch_pm_text: "🎵 Type any song name to search...",
+      switch_pm_parameter: "search"
+    });
+    return;
+  }
+
+  const songs = await searchYouTubeInnerTube(query, 6);
+  const inlineResults = [];
+
+  for (let i = 0; i < songs.length; i++) {
+    const s = songs[i];
+    const track = await resolveAudioForTrack(s, "320");
+    if (track && track.audioUrl) {
+      inlineResults.push({
+        type: "audio",
+        id: `inline_${s.id}_${i}`,
+        audio_url: track.audioUrl,
+        title: track.title,
+        performer: track.artist || "SR Music",
+        caption: `🎵 *${escapeMd(track.title)}* — ${escapeMd(track.artist)}\n⚡ _via ${CHANNEL_USERNAME}_`,
+        parse_mode: "Markdown"
+      });
+    }
+  }
+
+  await tgApi(botToken, "answerInlineQuery", {
+    inline_query_id: queryId,
+    results: inlineResults,
+    cache_time: 300
+  });
+}
+
+// Welcome Menu with Quick Actions
 async function sendWelcomeMenu(botToken, chatId, userId) {
   const channelHandle = CHANNEL_USERNAME.replace("@", "");
   const keyboard = [
-    [{ text: "🔥 Top Trending Songs", callback_data: "trending_songs" }],
+    [
+      { text: "🔥 Top Trending Hits", callback_data: "nav_charts" },
+      { text: "⚙️ Audio Quality", callback_data: "set_quality_menu" }
+    ],
     [{ text: `📢 Official Hub (${CHANNEL_USERNAME})`, url: `https://t.me/${channelHandle}` }]
   ];
 
@@ -310,37 +422,57 @@ async function sendWelcomeMenu(botToken, chatId, userId) {
 
   await tgApi(botToken, "sendMessage", {
     chat_id: chatId,
-    text: "🎵 *Instant 320kbps MP3 Music Downloader*\n\nPowered by YouTube & Spotify Trending Search:\n• *Any Song Name* (e.g., _Pal Pal_, _Kesariya_)\n• *Any Artist* (e.g., _Aleemrk_, _Afusic_, _Arijit_)\n• *Any YouTube / Shorts Link*\n• *Any Line of Lyrics*\n\nTap any button below for the directly playable `.mp3`!",
+    text: "🎵 *Instant 320kbps MP3 Music Downloader*\n\nJust type and send:\n• *Any Song Name* (e.g., _Pal Pal_, _Kesariya_)\n• *Any Artist* (e.g., _Aleemrk_, _Afusic_, _Arijit_)\n• *Any YouTube / Shorts Link*\n\n⚡ *Pro Tip:* You can also type `@YourBot song` in any chat to share songs directly!",
     parse_mode: "Markdown",
     reply_markup: { inline_keyboard: keyboard }
   });
 }
 
-async function sendAdminPanel(botToken, db, chatId, editMsgId) {
-  const stats = await getStatsData(db);
-  const channelMembers = await getChannelMemberCount(botToken);
+// Top Weekly Trending Charts Menu (/top)
+async function sendTopCharts(botToken, chatId) {
+  const topList = [
+    "Pal Pal Afusic",
+    "Cold Hours Aleemrk",
+    "Sahiba Aditya Rikhari",
+    "Jhoot Harmeeet",
+    "Big Dawgs Hanumankind",
+    "Kesariya Arijit Singh",
+    "Tauba Tauba Karan Aujla",
+    "Wake Me Up Avicii",
+    "Winning Speech Karan Aujla",
+    "Ishq Faheem Abdullah"
+  ];
 
-  let text = `🛠️ *SR Bots Club — Owner Admin Panel*\n`;
-  text += `👤 *Admin ID:* \`${ADMIN_ID}\`\n\n`;
-  text += `📊 *Detailed Live Statistics:*\n`;
-  text += `• 👥 *Total Unique Bot Users:* ${stats.userCount}\n`;
-  if (channelMembers) {
-    text += `• 📢 *${CHANNEL_USERNAME} Subscribers:* ${channelMembers}\n`;
-  }
-  text += `• 🔍 *Total Song Searches:* ${stats.searches}\n`;
-  text += `• 🎧 *Total MP3 Downloads:* ${stats.downloads}\n`;
-  text += `• 💾 *Storage Engine:* ${db ? "Permanent Cloudflare KV (`BOT_DB`)" : "⚠️ RAM Mode (Bind BOT_DB in settings)"}\n\n`;
-  text += `_Tap a button below to broadcast an announcement, export your user list, or refresh stats:_`;
+  const keyboard = [];
+  let text = `🔥 *India's Top 10 Trending Hits This Week:*\n\n`;
 
-  const reply_markup = {
-    inline_keyboard: [
-      [{ text: "📢 Broadcast to All Users", callback_data: "admin_broadcast_start" }],
-      [
-        { text: "📥 Export Users (.txt)", callback_data: "admin_export_users" },
-        { text: "🔄 Refresh Stats", callback_data: "admin_refresh" }
-      ]
+  topList.forEach((song, idx) => {
+    const num = idx + 1;
+    text += `*${num}.* ${escapeMd(song)}\n`;
+    keyboard.push([{ text: `▶️ ${num}. ${song}`, callback_data: `dl_top_${encodeURIComponent(song)}` }]);
+  });
+
+  text += `\n👇 _Tap a song button below to download the playable MP3:_`;
+
+  await tgApi(botToken, "sendMessage", {
+    chat_id: chatId,
+    text: text,
+    parse_mode: "Markdown",
+    reply_markup: { inline_keyboard: keyboard.slice(0, 5) }
+  });
+}
+
+// Audio Quality Setting Menu (/settings)
+async function sendSettingsMenu(botToken, db, chatId, userId, editMsgId) {
+  const currentPref = db ? (await db.get(`pref_q_${userId}`)) || "320" : "320";
+  const text = `⚙️ *Audio Download Settings*\n\nChoose your preferred download quality:\n\n• *💎 Studio HD (320kbps):* Maximum acoustic fidelity, original album quality (~8–10 MB)\n• *⚡ Data Saver (128kbps):* Ultra-fast downloads, saves mobile recharge data (~3–4 MB)\n\n📌 *Current Quality:* ${currentPref === "128" ? "⚡ Data Saver (128kbps)" : "💎 Studio HD (320kbps)"}`;
+
+  const keyboard = [
+    [
+      { text: currentPref === "320" ? "✅ Studio HD (320k)" : "Studio HD (320k)", callback_data: "set_quality_320" },
+      { text: currentPref === "128" ? "✅ Data Saver (128k)" : "Data Saver (128k)", callback_data: "set_quality_128" }
     ]
-  };
+  ];
 
   if (editMsgId) {
     await tgApi(botToken, "editMessageText", {
@@ -348,176 +480,245 @@ async function sendAdminPanel(botToken, db, chatId, editMsgId) {
       message_id: editMsgId,
       text: text,
       parse_mode: "Markdown",
-      reply_markup: reply_markup
+      reply_markup: { inline_keyboard: keyboard }
     });
   } else {
     await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
       text: text,
       parse_mode: "Markdown",
-      reply_markup: reply_markup
+      reply_markup: { inline_keyboard: keyboard }
     });
   }
 }
 
-// Exports Full User ID List as a Downloadable .txt Document
-async function exportUsersFile(botToken, db, adminChatId) {
-  const users = await getAllUsers(db);
-  const fileContent = users.join("\n");
-
-  const form = new FormData();
-  form.append("chat_id", String(adminChatId));
-  form.append("caption", `📊 *SR Music Bot — User Database Export*\nTotal Unique Users: ${users.length}\nDate: ${new Date().toISOString().slice(0, 10)}`);
-  form.append("parse_mode", "Markdown");
-  form.append("document", new Blob([fileContent], { type: "text/plain" }), "users_list.txt");
-
-  await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
-    method: "POST",
-    body: form
-  });
-}
-
-// Broadcasts Any Copied Post/Media Message to All Users
-async function executeBroadcastCopy(botToken, db, adminChatId, messageId) {
-  const users = await getAllUsers(db);
-  const statusMsg = await tgApi(botToken, "sendMessage", {
-    chat_id: adminChatId,
-    text: `⏳ _Broadcasting message to ${users.length} registered users..._`,
-    parse_mode: "Markdown"
-  });
-
-  let sent = 0;
-  let failed = 0;
-
-  for (const uid of users) {
-    try {
-      const res = await tgApi(botToken, "copyMessage", {
-        chat_id: uid,
-        from_chat_id: adminChatId,
-        message_id: messageId
-      });
-      if (res && res.ok) sent++;
-      else failed++;
-    } catch (e) {
-      failed++;
+// Deliver MP3 with Complete Presets Keyboard
+async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
+  if (!track || !track.audioUrl) {
+    if (loadingMsgId) {
+      await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
     }
-  }
-
-  if (statusMsg.result?.message_id) {
-    await tgApi(botToken, "deleteMessage", {
-      chat_id: adminChatId,
-      message_id: statusMsg.result.message_id
+    const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(track?.title + " " + track?.artist)}`;
+    await tgApi(botToken, "sendMessage", {
+      chat_id: chatId,
+      text: `⚠️ Could not fetch direct audio stream for *${escapeMd(track?.title || "Track")}*.\n\nYou can stream directly on YouTube:`,
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [[{ text: "▶️ Listen on YouTube", url: ytUrl }]]
+      }
     });
+    return;
   }
 
-  await tgApi(botToken, "sendMessage", {
-    chat_id: adminChatId,
-    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users\n• 📊 *Total Target Base:* ${users.length} users`,
-    parse_mode: "Markdown"
-  });
-}
+  const finalTitle = track.title || "Track";
+  const finalArtist = (track.artist && track.artist !== "Artist") ? track.artist : "";
+  const songId = track.id || "0";
+  SONG_CACHE.set(songId, track);
 
-async function executeBroadcastText(botToken, db, adminChatId, text) {
-  const users = await getAllUsers(db);
-  let sent = 0;
-  let failed = 0;
+  const safeFileName = `${finalTitle}${finalArtist ? " - " + finalArtist : ""}`.replace(/[\\/:*?"<>|]/g, "").slice(0, 80) + ".mp3";
+  const channelHandle = CHANNEL_USERNAME.replace("@", "");
+  const botInfo = await tgApi(botToken, "getMe", {});
+  const botUsername = botInfo.result?.username || "InstantMP3SongBot";
+  const shareText = encodeURIComponent(`Download 320kbps MP3s free on @${botUsername} 🎵`);
+  const shareUrl = `https://t.me/share/url?url=https://t.me/${botUsername}&text=${shareText}`;
 
-  for (const uid of users) {
-    try {
-      const res = await tgApi(botToken, "sendMessage", {
-        chat_id: uid,
-        text: text,
-        parse_mode: "Markdown"
-      });
-      if (res && res.ok) sent++;
-      else failed++;
-    } catch (e) {
-      failed++;
-    }
-  }
-
-  await tgApi(botToken, "sendMessage", {
-    chat_id: adminChatId,
-    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users`,
-    parse_mode: "Markdown"
-  });
-}
-
-// Permanent Registration in Cloudflare KV
-async function registerUser(db, userId) {
-  if (!userId) return;
-  const numId = Number(userId);
-  MEM_USERS.add(numId);
-
-  if (db) {
-    try {
-      // Check if user is already saved permanently
-      const existing = await db.get(`u_${numId}`);
-      if (!existing) {
-        await db.put(`u_${numId}`, new Date().toISOString().slice(0, 10));
-        // Append to master index
-        const raw = await db.get("master_users_list");
-        const list = raw ? JSON.parse(raw) : [ADMIN_ID];
-        if (!list.includes(numId)) {
-          list.push(numId);
-          await db.put("master_users_list", JSON.stringify(list));
-        }
-      }
-    } catch (e) {}
-  }
-}
-
-// Retrieves All Users from Permanent KV Database
-async function getAllUsers(db) {
-  if (db) {
-    try {
-      const raw = await db.get("master_users_list");
-      if (raw) {
-        const list = JSON.parse(raw);
-        list.forEach(id => MEM_USERS.add(Number(id)));
-      }
-    } catch (e) {}
-  }
-  return Array.from(MEM_USERS);
-}
-
-async function incrementStat(db, key) {
-  MEM_STATS[key] = (MEM_STATS[key] || 0) + 1;
-  if (db) {
-    try {
-      const cur = Number((await db.get(`stat_${key}`)) || 0) + 1;
-      await db.put(`stat_${key}`, String(cur));
-    } catch (e) {}
-  }
-}
-
-async function getStatsData(db) {
-  const users = await getAllUsers(db);
-  let searches = MEM_STATS.searches;
-  let downloads = MEM_STATS.downloads;
-  if (db) {
-    try {
-      const s = await db.get("stat_searches");
-      const d = await db.get("stat_downloads");
-      if (s) searches = Math.max(searches, Number(s));
-      if (d) downloads = Math.max(downloads, Number(d));
-    } catch (e) {}
-  }
-  return {
-    userCount: users.length,
-    searches,
-    downloads
+  // Complete Feature Action Buttons
+  const actionButtons = {
+    inline_keyboard: [
+      [
+        { text: "📝 Get Lyrics", callback_data: `lyr|${songId}` },
+        { text: "🔀 More Like This", callback_data: `vibe|${songId}` }
+      ],
+      [
+        { text: "🌙 Slowed + Reverb", callback_data: `slow|${songId}` },
+        { text: "🔊 Bass Boosted", callback_data: `bass|${songId}` }
+      ],
+      [
+        { text: "🔔 30s Hook / Ringtone", callback_data: `ring|${songId}` },
+        { text: "📲 Share Bot", url: shareUrl }
+      ],
+      [{ text: `📢 Official Hub (${CHANNEL_USERNAME})`, url: `https://t.me/${channelHandle}` }]
+    ]
   };
+
+  try {
+    const audioRes = await fetch(track.audioUrl);
+    if (!audioRes.ok) throw new Error("Audio CDN fetch failed");
+    const audioBuffer = await audioRes.arrayBuffer();
+
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("title", finalTitle);
+    form.append("performer", finalArtist || "SR Music");
+    if (track.duration) {
+      form.append("duration", String(track.duration));
+    }
+    form.append(
+      "caption",
+      `🎵 *${escapeMd(finalTitle)}*\n${finalArtist ? `🎤 ${escapeMd(finalArtist)}\n` : ""}${track.album ? `💿 _${escapeMd(track.album)}_\n` : ""}\n⚡ _Downloaded via @${botUsername} • ${CHANNEL_USERNAME}_`
+    );
+    form.append("parse_mode", "Markdown");
+    form.append("reply_markup", JSON.stringify(actionButtons));
+
+    if (track.image) {
+      try {
+        const thumbRes = await fetch(track.image);
+        if (thumbRes.ok) {
+          const thumbBuf = await thumbRes.arrayBuffer();
+          form.append("thumbnail", new Blob([thumbBuf], { type: "image/jpeg" }), "cover.jpg");
+        }
+      } catch (e) {}
+    }
+
+    form.append("audio", new Blob([audioBuffer], { type: "audio/mpeg" }), safeFileName);
+
+    const uploadRes = await fetch(`https://api.telegram.org/bot${botToken}/sendAudio`, {
+      method: "POST",
+      body: form
+    });
+    const uploadData = await uploadRes.json();
+
+    if (loadingMsgId) {
+      await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
+    }
+
+    if (uploadData.ok) return;
+  } catch (err) {
+    console.error("FormData MP3 upload fallback:", err);
+  }
+
+  if (loadingMsgId) {
+    await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
+  }
+  await tgApi(botToken, "sendAudio", {
+    chat_id: chatId,
+    audio: track.audioUrl,
+    title: finalTitle,
+    performer: finalArtist || "SR Music",
+    caption: `🎵 *${escapeMd(finalTitle)}* — ${escapeMd(finalArtist)}\n⚡ _via @${botUsername} • ${CHANNEL_USERNAME}_`,
+    parse_mode: "Markdown",
+    reply_markup: actionButtons
+  });
 }
 
-async function getChannelMemberCount(botToken) {
+// Parallel Racing Lyrics Engine (Sub-Second Latency with KV Cache)
+async function getParallelRacingLyrics(db, songId, songTitle, songArtist, geminiKey) {
+  // 1. Check Permanent KV Cache (Instant 50ms Return)
+  if (db && songId) {
+    try {
+      const cached = await db.get(`lyr_cache_${songId}`);
+      if (cached) return cached;
+    } catch (e) {}
+  }
+
+  const cleanTitle = songTitle.replace(/\(.*?\)|\[.*?\]/g, "").trim();
+  const lrcQuery = songArtist && songArtist !== "Artist"
+    ? `${cleanTitle} ${songArtist}`
+    : cleanTitle;
+
+  // 2. Launch Parallel Race across LRCLIB and JioSaavn with 2.8s Timeouts
+  const racePromises = [];
+
+  // Racer A: LRCLIB Global Open Lyrics Library
+  racePromises.push(
+    (async () => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2800);
+      try {
+        const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(lrcQuery)}`, {
+          headers: { "User-Agent": "SRMusicBot/2.0 (Telegram)" },
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const records = await res.json();
+          if (Array.isArray(records) && records.length > 0) {
+            for (const item of records.slice(0, 3)) {
+              const text = item.plainLyrics || item.syncedLyrics;
+              if (text && text.trim().length > 20) {
+                return text.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, "").trim();
+              }
+            }
+          }
+        }
+      } catch (e) {}
+      throw new Error("LRCLIB miss");
+    })()
+  );
+
+  // Racer B: JioSaavn Official Records
+  if (songId && !songId.startsWith("yt_") && !songId.startsWith("itunes_")) {
+    racePromises.push(
+      (async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2800);
+        try {
+          const res = await fetch(`https://saavn.sumit.co/api/lyrics?id=${encodeURIComponent(songId)}`, {
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            const data = await res.json();
+            const rawLyrics = data.data?.lyrics || data.lyrics || "";
+            if (rawLyrics && typeof rawLyrics === "string" && rawLyrics.trim().length > 10) {
+              return cleanHtmlEntities(rawLyrics.replace(/<br\s*\/?>/gi, "\n"));
+            }
+          }
+        } catch (e) {}
+        throw new Error("JioSaavn miss");
+      })()
+    );
+  }
+
+  // Await the fastest server to return valid lyrics
   try {
-    const res = await tgApi(botToken, "getChatMemberCount", {
-      chat_id: CHANNEL_USERNAME
-    });
-    if (res && res.ok) return res.result;
-  } catch (e) {}
-  return null;
+    const winnerLyrics = await Promise.any(racePromises);
+    if (winnerLyrics && typeof winnerLyrics === "string") {
+      if (db && songId) {
+        await db.put(`lyr_cache_${songId}`, winnerLyrics);
+      }
+      return winnerLyrics;
+    }
+  } catch (err) {}
+
+  // 3. Fallback to Dynamic Gemini Flash
+  if (geminiKey && !geminiKey.includes("PASTE_YOUR")) {
+    try {
+      const models = await getAvailableFlashModels(geminiKey);
+      for (const model of models) {
+        try {
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [
+                      {
+                        text: `Provide the main chorus and verses for the song "${songTitle}" by "${songArtist}". Reply with ONLY clean lyrics formatted with line breaks, without intro or commentary.`
+                      }
+                    ]
+                  }
+                ]
+              })
+            }
+          );
+          if (!res.ok) continue;
+          const data = await res.json();
+          const lyricsText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (lyricsText && lyricsText.trim().length > 15) {
+            const clean = lyricsText.trim();
+            if (db && songId) await db.put(`lyr_cache_${songId}`, clean);
+            return clean;
+          }
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  return "Verified lyrics are not available for this track yet. Try another version from the list!";
 }
 
 // YouTube InnerTube Search: Ranks by Modern YouTube Popularity
@@ -670,10 +871,10 @@ function cleanYouTubeTitleAndArtist(title, channel) {
   };
 }
 
-async function resolveAudioForTrack(track) {
+async function resolveAudioForTrack(track, qualityPref = "320") {
   const query = `${track.title} ${track.artist}`.trim();
 
-  const saavnResults = await searchJioSaavnDeduplicated(query, 1);
+  const saavnResults = await searchJioSaavnDeduplicated(query, 1, qualityPref);
   if (saavnResults.length > 0 && saavnResults[0].audioUrl) {
     return {
       ...track,
@@ -683,7 +884,7 @@ async function resolveAudioForTrack(track) {
     };
   }
 
-  const titleResults = await searchJioSaavnDeduplicated(track.title, 1);
+  const titleResults = await searchJioSaavnDeduplicated(track.title, 1, qualityPref);
   if (titleResults.length > 0 && titleResults[0].audioUrl) {
     return {
       ...track,
@@ -713,187 +914,7 @@ async function resolveAudioForTrack(track) {
   return track;
 }
 
-async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
-  if (!track || !track.audioUrl) {
-    if (loadingMsgId) {
-      await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
-    }
-    const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(track?.title + " " + track?.artist)}`;
-    await tgApi(botToken, "sendMessage", {
-      chat_id: chatId,
-      text: `⚠️ Could not fetch direct 320kbps audio for *${escapeMd(track?.title || "Track")}*.\n\nYou can listen directly on YouTube:`,
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [[{ text: "▶️ Listen on YouTube", url: ytUrl }]]
-      }
-    });
-    return;
-  }
-
-  const finalTitle = track.title || "Track";
-  const finalArtist = (track.artist && track.artist !== "Artist") ? track.artist : "";
-  const songId = track.id || "0";
-  SONG_CACHE.set(songId, track);
-
-  const safeFileName = `${finalTitle}${finalArtist ? " - " + finalArtist : ""}`.replace(/[\\/:*?"<>|]/g, "").slice(0, 80) + ".mp3";
-  const channelHandle = CHANNEL_USERNAME.replace("@", "");
-  const botInfo = await tgApi(botToken, "getMe", {});
-  const botUsername = botInfo.result?.username || "InstantMP3SongBot";
-  const shareText = encodeURIComponent(`Download 320kbps MP3s free on @${botUsername} 🎵`);
-  const shareUrl = `https://t.me/share/url?url=https://t.me/${botUsername}&text=${shareText}`;
-
-  const actionButtons = {
-    inline_keyboard: [
-      [
-        { text: "📝 Get Lyrics", callback_data: `lyr|${songId}` },
-        { text: "📲 Share Bot", url: shareUrl }
-      ],
-      [{ text: `📢 Official Hub (${CHANNEL_USERNAME})`, url: `https://t.me/${channelHandle}` }]
-    ]
-  };
-
-  try {
-    const audioRes = await fetch(track.audioUrl);
-    if (!audioRes.ok) throw new Error("Audio CDN fetch failed");
-    const audioBuffer = await audioRes.arrayBuffer();
-
-    const form = new FormData();
-    form.append("chat_id", String(chatId));
-    form.append("title", finalTitle);
-    form.append("performer", finalArtist || "SR Music");
-    if (track.duration) {
-      form.append("duration", String(track.duration));
-    }
-    form.append(
-      "caption",
-      `🎵 *${escapeMd(finalTitle)}*\n${finalArtist ? `🎤 ${escapeMd(finalArtist)}\n` : ""}${track.album ? `💿 _${escapeMd(track.album)}_\n` : ""}\n⚡ _Downloaded via @${botUsername} • ${CHANNEL_USERNAME}_`
-    );
-    form.append("parse_mode", "Markdown");
-    form.append("reply_markup", JSON.stringify(actionButtons));
-
-    if (track.image) {
-      try {
-        const thumbRes = await fetch(track.image);
-        if (thumbRes.ok) {
-          const thumbBuf = await thumbRes.arrayBuffer();
-          form.append("thumbnail", new Blob([thumbBuf], { type: "image/jpeg" }), "cover.jpg");
-        }
-      } catch (e) {}
-    }
-
-    form.append("audio", new Blob([audioBuffer], { type: "audio/mpeg" }), safeFileName);
-
-    const uploadRes = await fetch(`https://api.telegram.org/bot${botToken}/sendAudio`, {
-      method: "POST",
-      body: form
-    });
-    const uploadData = await uploadRes.json();
-
-    if (loadingMsgId) {
-      await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
-    }
-
-    if (uploadData.ok) return;
-  } catch (err) {
-    console.error("FormData MP3 upload fallback:", err);
-  }
-
-  if (loadingMsgId) {
-    await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
-  }
-  await tgApi(botToken, "sendAudio", {
-    chat_id: chatId,
-    audio: track.audioUrl,
-    title: finalTitle,
-    performer: finalArtist || "SR Music",
-    caption: `🎵 *${escapeMd(finalTitle)}* — ${escapeMd(finalArtist)}\n⚡ _via @${botUsername} • ${CHANNEL_USERNAME}_`,
-    parse_mode: "Markdown",
-    reply_markup: actionButtons
-  });
-}
-
-async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
-  try {
-    const cleanTitle = songTitle.replace(/\(.*?\)|\[.*?\]/g, "").trim();
-    const lrcQuery = songArtist && songArtist !== "Artist"
-      ? `${cleanTitle} ${songArtist}`
-      : cleanTitle;
-
-    const lrcRes = await fetch(
-      `https://lrclib.net/api/search?q=${encodeURIComponent(lrcQuery)}`,
-      { headers: { "User-Agent": "SRMusicBot/2.0 (Telegram)" } }
-    );
-    if (lrcRes.ok) {
-      const records = await lrcRes.json();
-      if (Array.isArray(records) && records.length > 0) {
-        for (const item of records.slice(0, 3)) {
-          const text = item.plainLyrics || item.syncedLyrics;
-          if (text && text.trim().length > 20) {
-            return text.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, "").trim();
-          }
-        }
-      }
-    }
-  } catch (e) {}
-
-  if (songId && !songId.startsWith("yt_") && !songId.startsWith("itunes_")) {
-    const lyricsEndpoints = [
-      `https://saavn.sumit.co/api/lyrics?id=${encodeURIComponent(songId)}`,
-      `https://saavn.dev/api/lyrics?id=${encodeURIComponent(songId)}`,
-      `https://jiosaavn-api-privatecvc2.vercel.app/lyrics?id=${encodeURIComponent(songId)}`
-    ];
-
-    for (const ep of lyricsEndpoints) {
-      try {
-        const res = await fetch(ep);
-        if (!res.ok) continue;
-        const data = await res.json();
-        const rawLyrics = data.data?.lyrics || data.lyrics || "";
-        if (rawLyrics && typeof rawLyrics === "string" && rawLyrics.trim().length > 10) {
-          return cleanHtmlEntities(rawLyrics.replace(/<br\s*\/?>/gi, "\n"));
-        }
-      } catch (e) {}
-    }
-  }
-
-  if (geminiKey && !geminiKey.includes("PASTE_YOUR")) {
-    try {
-      const models = await getAvailableFlashModels(geminiKey);
-      for (const model of models) {
-        try {
-          const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                contents: [
-                  {
-                    parts: [
-                      {
-                        text: `Provide the main chorus and verses for the song "${songTitle}" by "${songArtist}". Reply with ONLY clean lyrics formatted with line breaks, without conversational intro or commentary.`
-                      }
-                    ]
-                  }
-                ]
-              })
-            }
-          );
-          if (!res.ok) continue;
-          const data = await res.json();
-          const lyricsText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (lyricsText && lyricsText.trim().length > 15) {
-            return lyricsText.trim();
-          }
-        } catch (e) {}
-      }
-    } catch (e) {}
-  }
-
-  return "Verified lyrics are not available for this track yet. Try another version from the list!";
-}
-
-async function searchJioSaavnDeduplicated(query, limit = 5) {
+async function searchJioSaavnDeduplicated(query, limit = 5, qualityPref = "320") {
   const saavnEndpoints = [
     `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=15`,
     `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=15`,
@@ -913,7 +934,7 @@ async function searchJioSaavnDeduplicated(query, limit = 5) {
         const unique = [];
         const seen = new Set();
         for (const item of list) {
-          const parsed = normalizeSaavnSong(item);
+          const parsed = normalizeSaavnSong(item, qualityPref);
           if (parsed && parsed.audioUrl) {
             const sig = parsed.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 15);
             if (!seen.has(sig)) {
@@ -930,12 +951,16 @@ async function searchJioSaavnDeduplicated(query, limit = 5) {
   return [];
 }
 
-function normalizeSaavnSong(song) {
+function normalizeSaavnSong(song, qualityPref = "320") {
   const downloads = song.downloadUrl || song.download_url || [];
   let bestAudio = null;
   if (Array.isArray(downloads) && downloads.length > 0) {
-    const high = downloads[downloads.length - 1];
-    bestAudio = high?.url || high?.link;
+    if (qualityPref === "128" && downloads.length >= 2) {
+      bestAudio = downloads[1]?.url || downloads[1]?.link;
+    } else {
+      const high = downloads[downloads.length - 1];
+      bestAudio = high?.url || high?.link;
+    }
   } else if (typeof song.media_url === "string") {
     bestAudio = song.media_url;
   }
@@ -1039,6 +1064,79 @@ async function getAvailableFlashModels(geminiKey) {
   ];
 }
 
+async function registerUser(db, userId) {
+  if (!userId) return;
+  const numId = Number(userId);
+  MEM_USERS.add(numId);
+
+  if (db) {
+    try {
+      const existing = await db.get(`u_${numId}`);
+      if (!existing) {
+        await db.put(`u_${numId}`, new Date().toISOString().slice(0, 10));
+        const raw = await db.get("master_users_list");
+        const list = raw ? JSON.parse(raw) : [ADMIN_ID];
+        if (!list.includes(numId)) {
+          list.push(numId);
+          await db.put("master_users_list", JSON.stringify(list));
+        }
+      }
+    } catch (e) {}
+  }
+}
+
+async function getAllUsers(db) {
+  if (db) {
+    try {
+      const raw = await db.get("master_users_list");
+      if (raw) {
+        const list = JSON.parse(raw);
+        list.forEach(id => MEM_USERS.add(Number(id)));
+      }
+    } catch (e) {}
+  }
+  return Array.from(MEM_USERS);
+}
+
+async function incrementStat(db, key) {
+  MEM_STATS[key] = (MEM_STATS[key] || 0) + 1;
+  if (db) {
+    try {
+      const cur = Number((await db.get(`stat_${key}`)) || 0) + 1;
+      await db.put(`stat_${key}`, String(cur));
+    } catch (e) {}
+  }
+}
+
+async function getStatsData(db) {
+  const users = await getAllUsers(db);
+  let searches = MEM_STATS.searches;
+  let downloads = MEM_STATS.downloads;
+  if (db) {
+    try {
+      const s = await db.get("stat_searches");
+      const d = await db.get("stat_downloads");
+      if (s) searches = Math.max(searches, Number(s));
+      if (d) downloads = Math.max(downloads, Number(d));
+    } catch (e) {}
+  }
+  return {
+    userCount: users.length,
+    searches,
+    downloads
+  };
+}
+
+async function getChannelMemberCount(botToken) {
+  try {
+    const res = await tgApi(botToken, "getChatMemberCount", {
+      chat_id: CHANNEL_USERNAME
+    });
+    if (res && res.ok) return res.result;
+  } catch (e) {}
+  return null;
+}
+
 async function isUserInChannel(botToken, userId) {
   try {
     const res = await tgApi(botToken, "getChatMember", {
@@ -1050,6 +1148,133 @@ async function isUserInChannel(botToken, userId) {
     return status === "member" || status === "administrator" || status === "creator";
   } catch (e) {}
   return true;
+}
+
+// Exports User ID Database as .txt Document
+async function exportUsersFile(botToken, db, adminChatId) {
+  const users = await getAllUsers(db);
+  const fileContent = users.join("\n");
+
+  const form = new FormData();
+  form.append("chat_id", String(adminChatId));
+  form.append("caption", `📊 *SR Music Bot — User Database Export*\nTotal Unique Users: ${users.length}\nDate: ${new Date().toISOString().slice(0, 10)}`);
+  form.append("parse_mode", "Markdown");
+  form.append("document", new Blob([fileContent], { type: "text/plain" }), "users_list.txt");
+
+  await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+    method: "POST",
+    body: form
+  });
+}
+
+// Admin Broadcast Copy Engine
+async function executeBroadcastCopy(botToken, db, adminChatId, messageId) {
+  const users = await getAllUsers(db);
+  const statusMsg = await tgApi(botToken, "sendMessage", {
+    chat_id: adminChatId,
+    text: `⏳ _Broadcasting message to ${users.length} registered users..._`,
+    parse_mode: "Markdown"
+  });
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const uid of users) {
+    try {
+      const res = await tgApi(botToken, "copyMessage", {
+        chat_id: uid,
+        from_chat_id: adminChatId,
+        message_id: messageId
+      });
+      if (res && res.ok) sent++;
+      else failed++;
+    } catch (e) {
+      failed++;
+    }
+  }
+
+  if (statusMsg.result?.message_id) {
+    await tgApi(botToken, "deleteMessage", {
+      chat_id: adminChatId,
+      message_id: statusMsg.result.message_id
+    });
+  }
+
+  await tgApi(botToken, "sendMessage", {
+    chat_id: adminChatId,
+    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users\n• 📊 *Total Target Base:* ${users.length} users`,
+    parse_mode: "Markdown"
+  });
+}
+
+async function executeBroadcastText(botToken, db, adminChatId, text) {
+  const users = await getAllUsers(db);
+  let sent = 0;
+  let failed = 0;
+
+  for (const uid of users) {
+    try {
+      const res = await tgApi(botToken, "sendMessage", {
+        chat_id: uid,
+        text: text,
+        parse_mode: "Markdown"
+      });
+      if (res && res.ok) sent++;
+      else failed++;
+    } catch (e) {
+      failed++;
+    }
+  }
+
+  await tgApi(botToken, "sendMessage", {
+    chat_id: adminChatId,
+    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users`,
+    parse_mode: "Markdown"
+  });
+}
+
+async function sendAdminPanel(botToken, db, chatId, editMsgId) {
+  const stats = await getStatsData(db);
+  const channelMembers = await getChannelMemberCount(botToken);
+
+  let text = `🛠️ *SR Bots Club — Owner Admin Panel*\n`;
+  text += `👤 *Admin ID:* \`${ADMIN_ID}\`\n\n`;
+  text += `📊 *Detailed Live Statistics:*\n`;
+  text += `• 👥 *Total Unique Bot Users:* ${stats.userCount}\n`;
+  if (channelMembers) {
+    text += `• 📢 *${CHANNEL_USERNAME} Subscribers:* ${channelMembers}\n`;
+  }
+  text += `• 🔍 *Total Song Searches:* ${stats.searches}\n`;
+  text += `• 🎧 *Total MP3 Downloads:* ${stats.downloads}\n`;
+  text += `• 💾 *Storage Engine:* ${db ? "Permanent Cloudflare KV (`BOT_DB`)" : "⚠️ RAM Mode"}\n\n`;
+  text += `_Tap a button below to broadcast an announcement, export your user list, or refresh stats:_`;
+
+  const reply_markup = {
+    inline_keyboard: [
+      [{ text: "📢 Broadcast to All Users", callback_data: "admin_broadcast_start" }],
+      [
+        { text: "📥 Export Users (.txt)", callback_data: "admin_export_users" },
+        { text: "🔄 Refresh Stats", callback_data: "admin_refresh" }
+      ]
+    ]
+  };
+
+  if (editMsgId) {
+    await tgApi(botToken, "editMessageText", {
+      chat_id: chatId,
+      message_id: editMsgId,
+      text: text,
+      parse_mode: "Markdown",
+      reply_markup: reply_markup
+    });
+  } else {
+    await tgApi(botToken, "sendMessage", {
+      chat_id: chatId,
+      text: text,
+      parse_mode: "Markdown",
+      reply_markup: reply_markup
+    });
+  }
 }
 
 function cleanHtmlEntities(str) {
