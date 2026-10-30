@@ -3,13 +3,11 @@ const DEFAULT_GEMINI_KEY = "PASTE_YOUR_GEMINI_KEY_HERE";
 const CHANNEL_USERNAME = "@SrBotsClub";
 const ADMIN_ID = 5527067319;
 
-// Fast in-memory caches
 const SONG_CACHE = new Map();
 const MEM_USERS = new Set([ADMIN_ID]);
 const MEM_STATS = {
   searches: 0,
-  downloads: 0,
-  joinedAt: new Date().toISOString().slice(0, 10)
+  downloads: 0
 };
 let ADMIN_BROADCAST_MODE = false;
 let CACHED_MODELS = null;
@@ -35,10 +33,10 @@ export default {
       );
       const tgData = await tgRes.json();
 
-      let html = `<h2>${tgData.ok ? "✅ YouTube-Ranked Music Bot Live!" : "❌ Telegram Token Error"}</h2>`;
+      let html = `<h2>${tgData.ok ? "✅ Permanent Database Connected!" : "❌ Telegram Token Error"}</h2>`;
       html += `<p><b>Telegram Status:</b> ${tgData.ok ? "Connected to " + CHANNEL_USERNAME : JSON.stringify(tgData)}</p>`;
-      html += `<p><b>Search Engine:</b> YouTube Trending InnerTube (Afusic & Aleemrk priority)</p>`;
       html += `<p><b>Admin ID Locked To:</b> ${ADMIN_ID}</p>`;
+      html += `<p><b>Permanent KV Storage (BOT_DB):</b> ${db ? "✅ Active & Permanent" : "⚠️ Running in RAM Mode (Bind BOT_DB in Worker Settings -> Bindings)"}</p>`;
 
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -54,14 +52,13 @@ export default {
     }
 
     return new Response(
-      `🎵 SR Music Bot (YouTube Engine) Running!\nVisit ${url.origin}/setup to verify webhook.`,
+      `🎵 SR Music Bot Running!\nVisit ${url.origin}/setup to verify webhook.`,
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
   }
 };
 
 async function handleUpdate(update, botToken, geminiKey, db) {
-  // 1. Handle Inline Button Clicks
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message.chat.id;
@@ -97,7 +94,6 @@ async function handleUpdate(update, botToken, geminiKey, db) {
       return;
     }
 
-    // Accurate Lyrics Handler
     if (data.startsWith("lyr|")) {
       await tgApi(botToken, "answerCallbackQuery", {
         callback_query_id: cb.id,
@@ -153,6 +149,15 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         return;
       }
 
+      if (data === "admin_export_users") {
+        await tgApi(botToken, "answerCallbackQuery", {
+          callback_query_id: cb.id,
+          text: "📥 Exporting user list..."
+        });
+        await exportUsersFile(botToken, db, chatId);
+        return;
+      }
+
       if (data === "admin_broadcast_start") {
         ADMIN_BROADCAST_MODE = true;
         if (db) await db.put("admin_broadcast_mode", "true");
@@ -162,7 +167,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         });
         await tgApi(botToken, "sendMessage", {
           chat_id: chatId,
-          text: "📢 *Admin Broadcast Mode Active*\n\nSend or forward *any message* right now to broadcast it to all bot users!\n\n_Tap Cancel below if you change your mind._",
+          text: "📢 *Admin Broadcast Mode Active*\n\nSend or forward *any message* right now (text, photo, video, audio, or post with buttons) and I will broadcast it to all bot users!\n\n_Tap Cancel below if you change your mind._",
           parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [[{ text: "❌ Cancel Broadcast", callback_data: "admin_broadcast_cancel" }]]
@@ -206,7 +211,6 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         parse_mode: "Markdown"
       });
 
-      // If track doesn't have direct audio yet, fetch via high-speed CDN
       if (!track?.audioUrl && track) {
         track = await resolveAudioForTrack(track);
       }
@@ -217,7 +221,6 @@ async function handleUpdate(update, botToken, geminiKey, db) {
     return;
   }
 
-  // 2. Handle Messages
   const msg = update.message;
   if (!msg || !msg.chat) return;
 
@@ -227,7 +230,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
 
   await registerUser(db, userId);
 
-  // Admin Interceptors
+  // Admin Commands & Broadcast Interceptor
   if (userId === ADMIN_ID) {
     if (text === "/stats" || text === "/admin") {
       ADMIN_BROADCAST_MODE = false;
@@ -266,7 +269,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
     }
   }
 
-  // Force-Join Channel Gatekeeper
+  // Force-Join Gatekeeper
   const isMember = await isUserInChannel(botToken, userId);
   if (!isMember) {
     const channelHandle = CHANNEL_USERNAME.replace("@", "");
@@ -319,20 +322,23 @@ async function sendAdminPanel(botToken, db, chatId, editMsgId) {
 
   let text = `🛠️ *SR Bots Club — Owner Admin Panel*\n`;
   text += `👤 *Admin ID:* \`${ADMIN_ID}\`\n\n`;
-  text += `📊 *Live Bot Statistics:*\n`;
-  text += `• 👥 *Bot Users Tracked:* ${stats.userCount}\n`;
+  text += `📊 *Detailed Live Statistics:*\n`;
+  text += `• 👥 *Total Unique Bot Users:* ${stats.userCount}\n`;
   if (channelMembers) {
     text += `• 📢 *${CHANNEL_USERNAME} Subscribers:* ${channelMembers}\n`;
   }
   text += `• 🔍 *Total Song Searches:* ${stats.searches}\n`;
   text += `• 🎧 *Total MP3 Downloads:* ${stats.downloads}\n`;
-  text += `• 💾 *Storage Mode:* ${db ? "Permanent KV Database" : "Fast RAM Cache"}\n\n`;
-  text += `_Use the buttons below to refresh stats or send a broadcast to all users:_`;
+  text += `• 💾 *Storage Engine:* ${db ? "Permanent Cloudflare KV (`BOT_DB`)" : "⚠️ RAM Mode (Bind BOT_DB in settings)"}\n\n`;
+  text += `_Tap a button below to broadcast an announcement, export your user list, or refresh stats:_`;
 
   const reply_markup = {
     inline_keyboard: [
-      [{ text: "📢 Broadcast Message to All Users", callback_data: "admin_broadcast_start" }],
-      [{ text: "🔄 Refresh Live Stats", callback_data: "admin_refresh" }]
+      [{ text: "📢 Broadcast to All Users", callback_data: "admin_broadcast_start" }],
+      [
+        { text: "📥 Export Users (.txt)", callback_data: "admin_export_users" },
+        { text: "🔄 Refresh Stats", callback_data: "admin_refresh" }
+      ]
     ]
   };
 
@@ -354,11 +360,29 @@ async function sendAdminPanel(botToken, db, chatId, editMsgId) {
   }
 }
 
+// Exports Full User ID List as a Downloadable .txt Document
+async function exportUsersFile(botToken, db, adminChatId) {
+  const users = await getAllUsers(db);
+  const fileContent = users.join("\n");
+
+  const form = new FormData();
+  form.append("chat_id", String(adminChatId));
+  form.append("caption", `📊 *SR Music Bot — User Database Export*\nTotal Unique Users: ${users.length}\nDate: ${new Date().toISOString().slice(0, 10)}`);
+  form.append("parse_mode", "Markdown");
+  form.append("document", new Blob([fileContent], { type: "text/plain" }), "users_list.txt");
+
+  await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, {
+    method: "POST",
+    body: form
+  });
+}
+
+// Broadcasts Any Copied Post/Media Message to All Users
 async function executeBroadcastCopy(botToken, db, adminChatId, messageId) {
   const users = await getAllUsers(db);
   const statusMsg = await tgApi(botToken, "sendMessage", {
     chat_id: adminChatId,
-    text: `⏳ _Broadcasting message to ${users.length} users..._`,
+    text: `⏳ _Broadcasting message to ${users.length} registered users..._`,
     parse_mode: "Markdown"
   });
 
@@ -388,7 +412,7 @@ async function executeBroadcastCopy(botToken, db, adminChatId, messageId) {
 
   await tgApi(botToken, "sendMessage", {
     chat_id: adminChatId,
-    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users`,
+    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users\n• 📊 *Total Target Base:* ${users.length} users`,
     parse_mode: "Markdown"
   });
 }
@@ -414,9 +438,86 @@ async function executeBroadcastText(botToken, db, adminChatId, text) {
 
   await tgApi(botToken, "sendMessage", {
     chat_id: adminChatId,
-    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed:* ${failed} users`,
+    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users`,
     parse_mode: "Markdown"
   });
+}
+
+// Permanent Registration in Cloudflare KV
+async function registerUser(db, userId) {
+  if (!userId) return;
+  const numId = Number(userId);
+  MEM_USERS.add(numId);
+
+  if (db) {
+    try {
+      // Check if user is already saved permanently
+      const existing = await db.get(`u_${numId}`);
+      if (!existing) {
+        await db.put(`u_${numId}`, new Date().toISOString().slice(0, 10));
+        // Append to master index
+        const raw = await db.get("master_users_list");
+        const list = raw ? JSON.parse(raw) : [ADMIN_ID];
+        if (!list.includes(numId)) {
+          list.push(numId);
+          await db.put("master_users_list", JSON.stringify(list));
+        }
+      }
+    } catch (e) {}
+  }
+}
+
+// Retrieves All Users from Permanent KV Database
+async function getAllUsers(db) {
+  if (db) {
+    try {
+      const raw = await db.get("master_users_list");
+      if (raw) {
+        const list = JSON.parse(raw);
+        list.forEach(id => MEM_USERS.add(Number(id)));
+      }
+    } catch (e) {}
+  }
+  return Array.from(MEM_USERS);
+}
+
+async function incrementStat(db, key) {
+  MEM_STATS[key] = (MEM_STATS[key] || 0) + 1;
+  if (db) {
+    try {
+      const cur = Number((await db.get(`stat_${key}`)) || 0) + 1;
+      await db.put(`stat_${key}`, String(cur));
+    } catch (e) {}
+  }
+}
+
+async function getStatsData(db) {
+  const users = await getAllUsers(db);
+  let searches = MEM_STATS.searches;
+  let downloads = MEM_STATS.downloads;
+  if (db) {
+    try {
+      const s = await db.get("stat_searches");
+      const d = await db.get("stat_downloads");
+      if (s) searches = Math.max(searches, Number(s));
+      if (d) downloads = Math.max(downloads, Number(d));
+    } catch (e) {}
+  }
+  return {
+    userCount: users.length,
+    searches,
+    downloads
+  };
+}
+
+async function getChannelMemberCount(botToken) {
+  try {
+    const res = await tgApi(botToken, "getChatMemberCount", {
+      chat_id: CHANNEL_USERNAME
+    });
+    if (res && res.ok) return res.result;
+  } catch (e) {}
+  return null;
 }
 
 // YouTube InnerTube Search: Ranks by Modern YouTube Popularity
@@ -436,10 +537,8 @@ async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text
     if (extracted) searchQuery = extracted;
   }
 
-  // 1. YouTube Popularity Search First (Returns Afusic, Aleemrk, Avicii, etc.)
   let songs = await searchYouTubeInnerTube(searchQuery, 5);
 
-  // 2. Fallback to deduplicated CDN if YouTube returns no items
   if (songs.length === 0) {
     songs = await searchJioSaavnDeduplicated(searchQuery, 5);
   }
@@ -486,7 +585,6 @@ async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text
   });
 }
 
-// YouTube InnerTube Search API (Free, Keyless, Globally Ranked)
 async function searchYouTubeInnerTube(query, limit = 5) {
   try {
     const res = await fetch(
@@ -523,7 +621,6 @@ async function searchYouTubeInnerTube(query, limit = 5) {
       const rawTitle = v.title?.runs?.[0]?.text || "";
       const channel = v.ownerText?.runs?.[0]?.text || v.shortBylineText?.runs?.[0]?.text || "";
 
-      // Clean YouTube Title: extract clean song and artist
       const parsed = cleanYouTubeTitleAndArtist(rawTitle, channel);
       const signature = parsed.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 15);
 
@@ -539,7 +636,7 @@ async function searchYouTubeInnerTube(query, limit = 5) {
           artist: parsed.artist,
           album: "YouTube Music",
           image: bestThumb,
-          audioUrl: null // Resolved on click
+          audioUrl: null
         });
       }
 
@@ -559,7 +656,6 @@ function cleanYouTubeTitleAndArtist(title, channel) {
     .replace(/\b(official video|official audio|music video|lyric video|full song|hd|4k|status|shorts)\b/gi, "")
     .trim();
 
-  // If title has "Artist - Song" or "Song - Artist"
   const split = clean.split(/\s*[-–—|•]\s*/);
   if (split.length >= 2) {
     return {
@@ -574,11 +670,9 @@ function cleanYouTubeTitleAndArtist(title, channel) {
   };
 }
 
-// Resolves Audio Stream for Selected Song (JioSaavn 320kbps first, iTunes second)
 async function resolveAudioForTrack(track) {
   const query = `${track.title} ${track.artist}`.trim();
 
-  // 1. Try JioSaavn with exact clean title + artist
   const saavnResults = await searchJioSaavnDeduplicated(query, 1);
   if (saavnResults.length > 0 && saavnResults[0].audioUrl) {
     return {
@@ -589,7 +683,6 @@ async function resolveAudioForTrack(track) {
     };
   }
 
-  // 2. Try JioSaavn with song title alone
   const titleResults = await searchJioSaavnDeduplicated(track.title, 1);
   if (titleResults.length > 0 && titleResults[0].audioUrl) {
     return {
@@ -600,7 +693,6 @@ async function resolveAudioForTrack(track) {
     };
   }
 
-  // 3. Fallback to Apple Global iTunes
   try {
     const itunesRes = await fetch(
       `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`
@@ -720,9 +812,7 @@ async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
   });
 }
 
-// Accurate Lyrics Engine (Matches clean Song + Artist on LRCLIB and JioSaavn)
 async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
-  // 1. LRCLIB Search with Clean Song Title + Artist
   try {
     const cleanTitle = songTitle.replace(/\(.*?\)|\[.*?\]/g, "").trim();
     const lrcQuery = songArtist && songArtist !== "Artist"
@@ -746,7 +836,6 @@ async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
     }
   } catch (e) {}
 
-  // 2. JioSaavn Official Records
   if (songId && !songId.startsWith("yt_") && !songId.startsWith("itunes_")) {
     const lyricsEndpoints = [
       `https://saavn.sumit.co/api/lyrics?id=${encodeURIComponent(songId)}`,
@@ -767,7 +856,6 @@ async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
     }
   }
 
-  // 3. Dynamic Gemini Fallback
   if (geminiKey && !geminiKey.includes("PASTE_YOUR")) {
     try {
       const models = await getAvailableFlashModels(geminiKey);
@@ -949,73 +1037,6 @@ async function getAvailableFlashModels(geminiKey) {
     "gemini-3-flash-preview",
     "gemini-2.0-flash"
   ];
-}
-
-async function registerUser(db, userId) {
-  if (!userId) return;
-  MEM_USERS.add(Number(userId));
-  if (db) {
-    try {
-      const raw = await db.get("users_list");
-      const arr = raw ? JSON.parse(raw) : [ADMIN_ID];
-      if (!arr.includes(Number(userId))) {
-        arr.push(Number(userId));
-        await db.put("users_list", JSON.stringify(arr));
-      }
-    } catch (e) {}
-  }
-}
-
-async function getAllUsers(db) {
-  if (db) {
-    try {
-      const raw = await db.get("users_list");
-      if (raw) {
-        const arr = JSON.parse(raw);
-        arr.forEach(u => MEM_USERS.add(Number(u)));
-      }
-    } catch (e) {}
-  }
-  return Array.from(MEM_USERS);
-}
-
-async function incrementStat(db, key) {
-  MEM_STATS[key] = (MEM_STATS[key] || 0) + 1;
-  if (db) {
-    try {
-      const cur = Number((await db.get(`stat_${key}`)) || 0) + 1;
-      await db.put(`stat_${key}`, String(cur));
-    } catch (e) {}
-  }
-}
-
-async function getStatsData(db) {
-  const users = await getAllUsers(db);
-  let searches = MEM_STATS.searches;
-  let downloads = MEM_STATS.downloads;
-  if (db) {
-    try {
-      const s = await db.get("stat_searches");
-      const d = await db.get("stat_downloads");
-      if (s) searches = Math.max(searches, Number(s));
-      if (d) downloads = Math.max(downloads, Number(d));
-    } catch (e) {}
-  }
-  return {
-    userCount: users.length,
-    searches,
-    downloads
-  };
-}
-
-async function getChannelMemberCount(botToken) {
-  try {
-    const res = await tgApi(botToken, "getChatMemberCount", {
-      chat_id: CHANNEL_USERNAME
-    });
-    if (res && res.ok) return res.result;
-  } catch (e) {}
-  return null;
 }
 
 async function isUserInChannel(botToken, userId) {
