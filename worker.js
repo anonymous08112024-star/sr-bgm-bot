@@ -35,11 +35,10 @@ export default {
       );
       const tgData = await tgRes.json();
 
-      let html = `<h2>${tgData.ok ? "✅ Maximum Potential Music Bot Live!" : "❌ Telegram Token Error"}</h2>`;
+      let html = `<h2>${tgData.ok ? "✅ SR Music Bot Fully Upgraded!" : "❌ Telegram Token Error"}</h2>`;
       html += `<p><b>Telegram Status:</b> ${tgData.ok ? "Connected to " + CHANNEL_USERNAME : JSON.stringify(tgData)}</p>`;
       html += `<p><b>Admin ID Locked To:</b> ${ADMIN_ID}</p>`;
-      html += `<p><b>Database:</b> ${db ? "✅ Connected (KV)" : "⚡ Fast RAM Cache"}</p>`;
-      html += `<p>Features Active: Top-5 MP3 Picker, Global LRCLIB Lyrics, Multi-Source Fallback, Admin Broadcast & Stats.</p>`;
+      html += `<p><b>Deduplication & YouTube Cleaner:</b> Active</p>`;
 
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -55,14 +54,14 @@ export default {
     }
 
     return new Response(
-      `🎵 SR Music Bot Max Engine Running!\nVisit ${url.origin}/setup to verify webhook.`,
+      `🎵 SR Music Bot Running!\nVisit ${url.origin}/setup to verify webhook.`,
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
   }
 };
 
 async function handleUpdate(update, botToken, geminiKey, db) {
-  // 1. Handle Inline Button Clicks
+  // 1. Handle Inline Buttons
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message.chat.id;
@@ -98,7 +97,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
       return;
     }
 
-    // High-Reliability Dual-Engine Lyrics Lookup (Under 15 Bytes Callback)
+    // Accurate Lyrics Handler
     if (data.startsWith("lyr|")) {
       await tgApi(botToken, "answerCallbackQuery", {
         callback_query_id: cb.id,
@@ -106,10 +105,10 @@ async function handleUpdate(update, botToken, geminiKey, db) {
       });
 
       const songId = data.slice(4);
-      let track = SONG_CACHE.get(songId);
+      const track = SONG_CACHE.get(songId);
 
       const songTitle = track?.title || "Song";
-      const songArtist = track?.artist || "";
+      const songArtist = (track?.artist && track.artist !== "Artist") ? track.artist : "";
 
       const loadingMsg = await tgApi(botToken, "sendMessage", {
         chat_id: chatId,
@@ -117,7 +116,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         parse_mode: "Markdown"
       });
 
-      const lyrics = await getUniversalLyrics(songId, songTitle, songArtist, geminiKey);
+      const lyrics = await getAccurateLyrics(songId, songTitle, songArtist, geminiKey);
 
       if (loadingMsg.result?.message_id) {
         await tgApi(botToken, "deleteMessage", {
@@ -128,13 +127,13 @@ async function handleUpdate(update, botToken, geminiKey, db) {
 
       await tgApi(botToken, "sendMessage", {
         chat_id: chatId,
-        text: `📝 *Lyrics — ${escapeMd(songTitle)}*\n_${escapeMd(songArtist)}_\n\n${escapeMd(lyrics.slice(0, 3800))}\n\n⚡ _Powered by ${CHANNEL_USERNAME}_`,
+        text: `📝 *Lyrics — ${escapeMd(songTitle)}*\n${songArtist ? `🎤 _${escapeMd(songArtist)}_\n\n` : "\n"}${escapeMd(lyrics.slice(0, 3800))}\n\n⚡ _Powered by ${CHANNEL_USERNAME}_`,
         parse_mode: "Markdown"
       });
       return;
     }
 
-    // Admin Panel Actions (Strictly locked to 5527067319)
+    // Admin Handlers (Locked to 5527067319)
     if (data.startsWith("admin_")) {
       if (userId !== ADMIN_ID) {
         await tgApi(botToken, "answerCallbackQuery", {
@@ -163,7 +162,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         });
         await tgApi(botToken, "sendMessage", {
           chat_id: chatId,
-          text: "📢 *Admin Broadcast Mode Active*\n\nSend or forward *any message* right now (text, photo, video, audio, or post with buttons) and I will broadcast it to all bot users!\n\n_Tap Cancel below if you change your mind._",
+          text: "📢 *Admin Broadcast Mode Active*\n\nSend or forward *any message* right now to broadcast it to all bot users!\n\n_Tap Cancel below if you change your mind._",
           parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [[{ text: "❌ Cancel Broadcast", callback_data: "admin_broadcast_cancel" }]]
@@ -181,7 +180,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         });
         await tgApi(botToken, "sendMessage", {
           chat_id: chatId,
-          text: "✅ *Broadcast Cancelled.* You are back in normal song-search mode.",
+          text: "✅ *Broadcast Cancelled.* You are back in normal mode.",
           parse_mode: "Markdown"
         });
         return;
@@ -189,7 +188,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
       return;
     }
 
-    // Song Selection from Top-5 Buttons
+    // Song Selection
     if (data.startsWith("dl|")) {
       await tgApi(botToken, "answerCallbackQuery", {
         callback_query_id: cb.id,
@@ -307,7 +306,7 @@ async function sendWelcomeMenu(botToken, chatId, userId) {
 
   await tgApi(botToken, "sendMessage", {
     chat_id: chatId,
-    text: "🎵 *Instant 320kbps MP3 Music Downloader*\n\nJust type and send:\n• *Any Song Name* (e.g., _Pal Pal Dil Ke Paas_, _Kesariya_)\n• *Song + Singer* (e.g., _Tum Hi Ho Arijit Singh_)\n• *Any Remix / Lo-Fi / Slowed* or *YouTube Link*\n• *Any Line of Lyrics*\n\nI will show you the top 5 matching tracks—tap any button for the directly playable `.mp3`!",
+    text: "🎵 *Instant 320kbps MP3 Music Downloader*\n\nJust type and send:\n• *Any Song Name* (e.g., _Pal Pal Dil Ke Paas_, _Kesariya_)\n• *Song + Singer* (e.g., _Wake Me Up Aleemrk_, _Tum Hi Ho_)\n• *Any YouTube / Shorts Link*\n• *Any Line of Lyrics*\n\nI will show you the top 5 matching tracks—tap any button for the directly playable `.mp3`!",
     parse_mode: "Markdown",
     reply_markup: { inline_keyboard: keyboard }
   });
@@ -358,7 +357,7 @@ async function executeBroadcastCopy(botToken, db, adminChatId, messageId) {
   const users = await getAllUsers(db);
   const statusMsg = await tgApi(botToken, "sendMessage", {
     chat_id: adminChatId,
-    text: `⏳ _Broadcasting your message to ${users.length} users..._`,
+    text: `⏳ _Broadcasting message to ${users.length} users..._`,
     parse_mode: "Markdown"
   });
 
@@ -388,7 +387,7 @@ async function executeBroadcastCopy(botToken, db, adminChatId, messageId) {
 
   await tgApi(botToken, "sendMessage", {
     chat_id: adminChatId,
-    text: `✅ *Broadcast Complete!*\n\n• 📬 *Successfully Delivered:* ${sent} users\n• 🚫 *Blocked / Failed:* ${failed} users`,
+    text: `✅ *Broadcast Complete!*\n\n• 📬 *Delivered:* ${sent} users\n• 🚫 *Failed / Blocked:* ${failed} users`,
     parse_mode: "Markdown"
   });
 }
@@ -430,18 +429,19 @@ async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text
 
   let searchQuery = text;
 
+  // Smart YouTube URL Cleaner (Splits at | and -)
   if (/https?:\/\/[^\s]+/i.test(text)) {
     const extracted = await extractTitleFromUrl(text);
     if (extracted) searchQuery = extracted;
   }
 
-  // Multi-Source Search (JioSaavn Studio + Global iTunes + YouTube Index)
-  let songs = await searchUniversalSongs(searchQuery, 5);
+  // Deduplicated Multi-Source Search (JioSaavn Studio + Apple Global iTunes)
+  let songs = await searchUniversalSongsDeduplicated(searchQuery, 5);
 
   if (songs.length === 0 && geminiKey && !geminiKey.includes("PASTE_YOUR")) {
     const aiGuess = await guessSongFromLyricsWithGemini(geminiKey, text);
     if (aiGuess) {
-      songs = await searchUniversalSongs(aiGuess, 5);
+      songs = await searchUniversalSongsDeduplicated(aiGuess, 5);
     }
   }
 
@@ -456,7 +456,7 @@ async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text
     const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
     await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
-      text: `😕 *No direct audio match found for "${escapeMd(searchQuery)}".*\n\nTry adding the singer name, or search directly on YouTube below:`,
+      text: `😕 *No direct audio match found for "${escapeMd(searchQuery)}".*\n\nTry typing the exact song title, or search on YouTube below:`,
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [[{ text: "▶️ Search on YouTube", url: ytSearchUrl }]]
@@ -500,18 +500,17 @@ async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
   }
 
   const finalTitle = track.title || "Track";
-  const finalArtist = track.artist || "Artist";
+  const finalArtist = (track.artist && track.artist !== "Artist") ? track.artist : "";
   const songId = track.id || "0";
   SONG_CACHE.set(songId, track);
 
-  const safeFileName = `${finalTitle} - ${finalArtist}`.replace(/[\\/:*?"<>|]/g, "").slice(0, 80) + ".mp3";
+  const safeFileName = `${finalTitle}${finalArtist ? " - " + finalArtist : ""}`.replace(/[\\/:*?"<>|]/g, "").slice(0, 80) + ".mp3";
   const channelHandle = CHANNEL_USERNAME.replace("@", "");
   const botInfo = await tgApi(botToken, "getMe", {});
-  const botUsername = botInfo.result?.username || "SrMusicBot";
-  const shareText = encodeURIComponent(`Listen to "${finalTitle}" by ${finalArtist} on @${botUsername} 🎵`);
+  const botUsername = botInfo.result?.username || "InstantMP3SongBot";
+  const shareText = encodeURIComponent(`Download 320kbps MP3s free on @${botUsername} 🎵`);
   const shareUrl = `https://t.me/share/url?url=https://t.me/${botUsername}&text=${shareText}`;
 
-  // Clean, short callback data (under 15 bytes to strictly obey Telegram's 64-byte cap)
   const actionButtons = {
     inline_keyboard: [
       [
@@ -530,13 +529,13 @@ async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
     const form = new FormData();
     form.append("chat_id", String(chatId));
     form.append("title", finalTitle);
-    form.append("performer", finalArtist);
+    form.append("performer", finalArtist || "SR Music");
     if (track.duration) {
       form.append("duration", String(track.duration));
     }
     form.append(
       "caption",
-      `🎵 *${escapeMd(finalTitle)}*\n🎤 ${escapeMd(finalArtist)}${track.album ? `\n💿 _${escapeMd(track.album)}_` : ""}\n\n⚡ _Downloaded via @${botUsername} • ${CHANNEL_USERNAME}_`
+      `🎵 *${escapeMd(finalTitle)}*\n${finalArtist ? `🎤 ${escapeMd(finalArtist)}\n` : ""}${track.album ? `💿 _${escapeMd(track.album)}_\n` : ""}\n⚡ _Downloaded via @${botUsername} • ${CHANNEL_USERNAME}_`
     );
     form.append("parse_mode", "Markdown");
     form.append("reply_markup", JSON.stringify(actionButtons));
@@ -575,37 +574,16 @@ async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
     chat_id: chatId,
     audio: track.audioUrl,
     title: finalTitle,
-    performer: finalArtist,
+    performer: finalArtist || "SR Music",
     caption: `🎵 *${escapeMd(finalTitle)}* — ${escapeMd(finalArtist)}\n⚡ _via @${botUsername} • ${CHANNEL_USERNAME}_`,
     parse_mode: "Markdown",
     reply_markup: actionButtons
   });
 }
 
-// 100% Reliable Multi-Source Lyrics Engine (LRCLIB Global + JioSaavn + Gemini Flash)
-async function getUniversalLyrics(songId, songTitle, songArtist, geminiKey) {
-  // 1. Primary Engine: LRCLIB Global Open Lyrics Library (Free, Keyless, Millions of Songs)
-  try {
-    const lrcQuery = `${songTitle} ${songArtist}`.trim();
-    const lrcRes = await fetch(
-      `https://lrclib.net/api/search?q=${encodeURIComponent(lrcQuery)}`,
-      { headers: { "User-Agent": "SRMusicBot/2.0 (Telegram)" } }
-    );
-    if (lrcRes.ok) {
-      const records = await lrcRes.json();
-      if (Array.isArray(records) && records.length > 0) {
-        for (const item of records.slice(0, 3)) {
-          const text = item.plainLyrics || item.syncedLyrics;
-          if (text && text.trim().length > 20) {
-            // Strip timestamp brackets from synced lyrics if present
-            return text.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, "").trim();
-          }
-        }
-      }
-    }
-  } catch (e) {}
-
-  // 2. Secondary Engine: JioSaavn Official Record-Label Lyrics
+// Accurate Lyrics Engine (JioSaavn Official First, then LRCLIB with Strict Matching)
+async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
+  // 1. Check Official Record-Label Lyrics on JioSaavn (Matches exact song ID)
   if (songId && songId !== "0" && !songId.startsWith("itunes_")) {
     const lyricsEndpoints = [
       `https://saavn.sumit.co/api/lyrics?id=${encodeURIComponent(songId)}`,
@@ -627,7 +605,31 @@ async function getUniversalLyrics(songId, songTitle, songArtist, geminiKey) {
     }
   }
 
-  // 3. Third Engine: Dynamic Gemini Flash Lyrics Extraction
+  // 2. Query LRCLIB with Song + Singer (Prevents wrong generic song matches)
+  try {
+    const cleanTitle = songTitle.replace(/\(.*?\)|\[.*?\]/g, "").trim();
+    const lrcQuery = songArtist && songArtist !== "Artist"
+      ? `${cleanTitle} ${songArtist}`
+      : cleanTitle;
+
+    const lrcRes = await fetch(
+      `https://lrclib.net/api/search?q=${encodeURIComponent(lrcQuery)}`,
+      { headers: { "User-Agent": "SRMusicBot/2.0 (Telegram)" } }
+    );
+    if (lrcRes.ok) {
+      const records = await lrcRes.json();
+      if (Array.isArray(records) && records.length > 0) {
+        for (const item of records.slice(0, 3)) {
+          const text = item.plainLyrics || item.syncedLyrics;
+          if (text && text.trim().length > 20) {
+            return text.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, "").trim();
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 3. Dynamic Gemini Fallback
   if (geminiKey && !geminiKey.includes("PASTE_YOUR")) {
     try {
       const models = await getAvailableFlashModels(geminiKey);
@@ -643,7 +645,7 @@ async function getUniversalLyrics(songId, songTitle, songArtist, geminiKey) {
                   {
                     parts: [
                       {
-                        text: `Provide the main chorus and verses for the song "${songTitle}" by "${songArtist}". Reply with ONLY the clean lyrics formatted with line breaks, without conversational intro or commentary.`
+                        text: `Provide the main chorus and verses for the song "${songTitle}" by "${songArtist}". Reply with ONLY clean lyrics formatted with line breaks, without intro or commentary.`
                       }
                     ]
                   }
@@ -665,13 +667,15 @@ async function getUniversalLyrics(songId, songTitle, songArtist, geminiKey) {
   return "Verified lyrics are not available for this track yet. Try another version from the list!";
 }
 
-// Multi-Source Song Search Engine (JioSaavn Studio + Apple Global iTunes + YouTube Index)
-async function searchUniversalSongs(query, limit = 5) {
-  // 1. Try Primary JioSaavn CDNs (Full 320kbps MP3s)
+// Search with Intelligent Deduplication (Filters out identical remake duplicates)
+async function searchUniversalSongsDeduplicated(query, limit = 5) {
+  const rawList = [];
+
+  // 1. Primary JioSaavn CDNs
   const saavnEndpoints = [
-    `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
-    `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
-    `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`,
+    `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=15`,
+    `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=15`,
+    `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=15`,
     `https://saavnapi-nine.vercel.app/result/?query=${encodeURIComponent(query)}`
   ];
 
@@ -680,33 +684,31 @@ async function searchUniversalSongs(query, limit = 5) {
       const res = await fetch(endpoint);
       if (!res.ok) continue;
       const json = await res.json();
-      const rawList = Array.isArray(json)
+      const list = Array.isArray(json)
         ? json
         : (json.data?.results || json.results || []);
 
-      if (rawList.length > 0) {
-        const parsed = [];
-        for (const song of rawList.slice(0, limit)) {
-          const item = normalizeSaavnSong(song);
-          if (item && item.audioUrl) parsed.push(item);
+      if (list.length > 0) {
+        for (const item of list) {
+          const parsed = normalizeSaavnSong(item);
+          if (parsed && parsed.audioUrl) rawList.push(parsed);
         }
-        if (parsed.length > 0) return parsed;
+        if (rawList.length > 0) break;
       }
     } catch (e) {}
   }
 
-  // 2. Global Music Search Fallback (Catches English, Pop, Indie & Non-Indian Tracks)
+  // 2. Global iTunes Search for English / Pop / Non-Indian Tracks
   try {
     const itunesRes = await fetch(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=${limit}`
+      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=10`
     );
     if (itunesRes.ok) {
       const itunesData = await itunesRes.json();
       if (itunesData.results && itunesData.results.length > 0) {
-        const itunesList = [];
         for (const item of itunesData.results) {
           if (item.previewUrl) {
-            itunesList.push({
+            rawList.push({
               id: `itunes_${item.trackId}`,
               title: item.trackName,
               artist: item.artistName,
@@ -718,12 +720,28 @@ async function searchUniversalSongs(query, limit = 5) {
             });
           }
         }
-        if (itunesList.length > 0) return itunesList;
       }
     }
   } catch (e) {}
 
-  return [];
+  // 3. Deduplication Algorithm: Merge duplicate remakes into distinct versions
+  const uniqueSongs = [];
+  const seenSignatures = new Set();
+
+  for (const song of rawList) {
+    // Create normalized signature: simplified title + first artist name
+    const simplifiedTitle = song.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 15);
+    const simplifiedArtist = song.artist.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8);
+    const signature = `${simplifiedTitle}_${simplifiedArtist}`;
+
+    if (!seenSignatures.has(signature)) {
+      seenSignatures.add(signature);
+      uniqueSongs.push(song);
+    }
+    if (uniqueSongs.length >= limit) break;
+  }
+
+  return uniqueSongs;
 }
 
 async function fetchSaavnSongById(songId) {
@@ -766,12 +784,15 @@ function normalizeSaavnSong(song) {
 
   const id = String(song.id || Math.random().toString(36).slice(2, 10));
   const title = cleanHtmlEntities(song.name || song.title || song.song || "Track");
-  const artist = cleanHtmlEntities(
+  
+  let artist = cleanHtmlEntities(
     song.artists?.primary?.map(a => a.name).join(", ") ||
     song.primaryArtists ||
     song.singers ||
-    "Artist"
+    ""
   );
+  if (!artist || artist === "Artist") artist = "";
+
   const album = cleanHtmlEntities(song.album?.name || song.album || "");
   const year = song.year || "";
   const duration = song.duration ? Number(song.duration) : 0;
@@ -779,6 +800,7 @@ function normalizeSaavnSong(song) {
   return { id, title, artist, album, year, duration, image: bestImage, audioUrl: bestAudio };
 }
 
+// Smart YouTube Title Extractor (Splits at | and - to extract clean Song + Artist)
 async function extractTitleFromUrl(text) {
   const urlMatch = text.match(/https?:\/\/[^\s]+/i);
   if (!urlMatch) return null;
@@ -793,13 +815,19 @@ async function extractTitleFromUrl(text) {
     if (res.ok) {
       const data = await res.json();
       if (data.title) {
-        return data.title
+        // Split by | or - to extract the actual song and artist name
+        const cleanRaw = data.title
           .replace(/#[^\s#]+/g, "")
           .replace(/\(official.*?\)|\[official.*?\]/gi, "")
-          .replace(/\b(shorts|short|trending|viral|status|bgm|full screen|4k|hd|lyrics|lyrical|video|audio)\b/gi, "")
-          .replace(/[|•~_]+/g, " ")
-          .replace(/\s+/g, " ")
+          .replace(/\b(shorts|short|trending|viral|status|full screen|4k|hd|lyrics|lyrical|video|audio)\b/gi, "")
           .trim();
+
+        const segments = cleanRaw.split(/[|\-•]/).map(s => s.trim()).filter(s => s.length > 1);
+        if (segments.length >= 2) {
+          // Takes "Jhoot" + "Harmeeet" from "Jhoot | Harmeeet | Hustle 5"
+          return `${segments[0]} ${segments[1]}`;
+        }
+        return segments[0] || cleanRaw;
       }
     }
   } catch (e) {}
