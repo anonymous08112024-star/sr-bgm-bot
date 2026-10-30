@@ -35,10 +35,10 @@ export default {
       );
       const tgData = await tgRes.json();
 
-      let html = `<h2>${tgData.ok ? "✅ SR Music Bot Fully Upgraded!" : "❌ Telegram Token Error"}</h2>`;
+      let html = `<h2>${tgData.ok ? "✅ YouTube-Ranked Music Bot Live!" : "❌ Telegram Token Error"}</h2>`;
       html += `<p><b>Telegram Status:</b> ${tgData.ok ? "Connected to " + CHANNEL_USERNAME : JSON.stringify(tgData)}</p>`;
+      html += `<p><b>Search Engine:</b> YouTube Trending InnerTube (Afusic & Aleemrk priority)</p>`;
       html += `<p><b>Admin ID Locked To:</b> ${ADMIN_ID}</p>`;
-      html += `<p><b>Deduplication & YouTube Cleaner:</b> Active</p>`;
 
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
@@ -54,14 +54,14 @@ export default {
     }
 
     return new Response(
-      `🎵 SR Music Bot Running!\nVisit ${url.origin}/setup to verify webhook.`,
+      `🎵 SR Music Bot (YouTube Engine) Running!\nVisit ${url.origin}/setup to verify webhook.`,
       { headers: { "content-type": "text/plain; charset=utf-8" } }
     );
   }
 };
 
 async function handleUpdate(update, botToken, geminiKey, db) {
-  // 1. Handle Inline Buttons
+  // 1. Handle Inline Button Clicks
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message.chat.id;
@@ -93,7 +93,7 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         callback_query_id: cb.id,
         text: "🔥 Loading Trending Hits..."
       });
-      await runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, "Top Hindi Trending Songs");
+      await runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, "Top Hindi Trending Songs 2026");
       return;
     }
 
@@ -206,8 +206,9 @@ async function handleUpdate(update, botToken, geminiKey, db) {
         parse_mode: "Markdown"
       });
 
-      if (!track && songId) {
-        track = await fetchSaavnSongById(songId);
+      // If track doesn't have direct audio yet, fetch via high-speed CDN
+      if (!track?.audioUrl && track) {
+        track = await resolveAudioForTrack(track);
       }
 
       await sendPlayableMp3(botToken, chatId, loadingMsg.result?.message_id, track);
@@ -306,7 +307,7 @@ async function sendWelcomeMenu(botToken, chatId, userId) {
 
   await tgApi(botToken, "sendMessage", {
     chat_id: chatId,
-    text: "🎵 *Instant 320kbps MP3 Music Downloader*\n\nJust type and send:\n• *Any Song Name* (e.g., _Pal Pal Dil Ke Paas_, _Kesariya_)\n• *Song + Singer* (e.g., _Wake Me Up Aleemrk_, _Tum Hi Ho_)\n• *Any YouTube / Shorts Link*\n• *Any Line of Lyrics*\n\nI will show you the top 5 matching tracks—tap any button for the directly playable `.mp3`!",
+    text: "🎵 *Instant 320kbps MP3 Music Downloader*\n\nPowered by YouTube & Spotify Trending Search:\n• *Any Song Name* (e.g., _Pal Pal_, _Kesariya_)\n• *Any Artist* (e.g., _Aleemrk_, _Afusic_, _Arijit_)\n• *Any YouTube / Shorts Link*\n• *Any Line of Lyrics*\n\nTap any button below for the directly playable `.mp3`!",
     parse_mode: "Markdown",
     reply_markup: { inline_keyboard: keyboard }
   });
@@ -418,31 +419,29 @@ async function executeBroadcastText(botToken, db, adminChatId, text) {
   });
 }
 
+// YouTube InnerTube Search: Ranks by Modern YouTube Popularity
 async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text) {
   await incrementStat(db, "searches");
 
   const statusMsg = await tgApi(botToken, "sendMessage", {
     chat_id: chatId,
-    text: `🔍 _Searching top matches for "${escapeMd(text)}"..._`,
+    text: `🔍 _Searching top trending matches for "${escapeMd(text)}"..._`,
     parse_mode: "Markdown"
   });
 
   let searchQuery = text;
 
-  // Smart YouTube URL Cleaner (Splits at | and -)
   if (/https?:\/\/[^\s]+/i.test(text)) {
     const extracted = await extractTitleFromUrl(text);
     if (extracted) searchQuery = extracted;
   }
 
-  // Deduplicated Multi-Source Search (JioSaavn Studio + Apple Global iTunes)
-  let songs = await searchUniversalSongsDeduplicated(searchQuery, 5);
+  // 1. YouTube Popularity Search First (Returns Afusic, Aleemrk, Avicii, etc.)
+  let songs = await searchYouTubeInnerTube(searchQuery, 5);
 
-  if (songs.length === 0 && geminiKey && !geminiKey.includes("PASTE_YOUR")) {
-    const aiGuess = await guessSongFromLyricsWithGemini(geminiKey, text);
-    if (aiGuess) {
-      songs = await searchUniversalSongsDeduplicated(aiGuess, 5);
-    }
+  // 2. Fallback to deduplicated CDN if YouTube returns no items
+  if (songs.length === 0) {
+    songs = await searchJioSaavnDeduplicated(searchQuery, 5);
   }
 
   if (statusMsg.result?.message_id) {
@@ -456,7 +455,7 @@ async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text
     const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
     await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
-      text: `😕 *No direct audio match found for "${escapeMd(searchQuery)}".*\n\nTry typing the exact song title, or search on YouTube below:`,
+      text: `😕 *No direct audio match found for "${escapeMd(searchQuery)}".*\n\nTry searching on YouTube below:`,
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [[{ text: "▶️ Search on YouTube", url: ytSearchUrl }]]
@@ -466,14 +465,14 @@ async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text
   }
 
   const keyboard = [];
-  let listText = `🎶 *Select the exact song to download MP3:*\n\n`;
+  let listText = `🎶 *Top Trending Matches for "${escapeMd(searchQuery)}":*\n\n`;
 
   songs.forEach((song, idx) => {
     const num = idx + 1;
     SONG_CACHE.set(song.id, song);
-    const yearStr = song.year ? ` (${song.year})` : "";
-    listText += `*${num}.* *${escapeMd(song.title)}* — ${escapeMd(song.artist)}${yearStr}\n`;
-    const btnLabel = `🎵 ${num}. ${song.title} — ${song.artist}`.slice(0, 60);
+    const artistStr = song.artist ? ` — ${song.artist}` : "";
+    listText += `*${num}.* *${escapeMd(song.title)}*${escapeMd(artistStr)}\n`;
+    const btnLabel = `🎵 ${num}. ${song.title}${artistStr}`.slice(0, 60);
     keyboard.push([{ text: btnLabel, callback_data: `dl|${song.id}` }]);
   });
 
@@ -487,14 +486,154 @@ async function runSongSearchAndShowButtons(botToken, geminiKey, db, chatId, text
   });
 }
 
+// YouTube InnerTube Search API (Free, Keyless, Globally Ranked)
+async function searchYouTubeInnerTube(query, limit = 5) {
+  try {
+    const res = await fetch(
+      "https://www.youtube.com/youtubei/v1/search?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: "WEB",
+              clientVersion: "2.20230526.01.00",
+              hl: "en",
+              gl: "IN"
+            }
+          },
+          query: query
+        })
+      }
+    );
+
+    if (!res.ok) return [];
+    const data = await res.json();
+    const contents =
+      data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents || [];
+
+    const songs = [];
+    const seenTitles = new Set();
+
+    for (const item of contents) {
+      const v = item.videoRenderer;
+      if (!v || !v.videoId) continue;
+
+      const rawTitle = v.title?.runs?.[0]?.text || "";
+      const channel = v.ownerText?.runs?.[0]?.text || v.shortBylineText?.runs?.[0]?.text || "";
+
+      // Clean YouTube Title: extract clean song and artist
+      const parsed = cleanYouTubeTitleAndArtist(rawTitle, channel);
+      const signature = parsed.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 15);
+
+      if (!seenTitles.has(signature)) {
+        seenTitles.add(signature);
+        const thumbs = v.thumbnail?.thumbnails || [];
+        const bestThumb = thumbs.length > 0 ? thumbs[thumbs.length - 1].url : null;
+
+        songs.push({
+          id: `yt_${v.videoId}`,
+          videoId: v.videoId,
+          title: parsed.title,
+          artist: parsed.artist,
+          album: "YouTube Music",
+          image: bestThumb,
+          audioUrl: null // Resolved on click
+        });
+      }
+
+      if (songs.length >= limit) break;
+    }
+
+    return songs;
+  } catch (e) {
+    return [];
+  }
+}
+
+function cleanYouTubeTitleAndArtist(title, channel) {
+  let clean = title
+    .replace(/#[^\s#]+/g, "")
+    .replace(/\(official.*?\)|\[official.*?\]|\(video\)|\(audio\)|\(lyric.*?\)|\(music video\)/gi, "")
+    .replace(/\b(official video|official audio|music video|lyric video|full song|hd|4k|status|shorts)\b/gi, "")
+    .trim();
+
+  // If title has "Artist - Song" or "Song - Artist"
+  const split = clean.split(/\s*[-–—|•]\s*/);
+  if (split.length >= 2) {
+    return {
+      title: split[1].trim(),
+      artist: split[0].trim()
+    };
+  }
+
+  return {
+    title: clean,
+    artist: channel.replace(/ - Topic|VEVO/gi, "").trim()
+  };
+}
+
+// Resolves Audio Stream for Selected Song (JioSaavn 320kbps first, iTunes second)
+async function resolveAudioForTrack(track) {
+  const query = `${track.title} ${track.artist}`.trim();
+
+  // 1. Try JioSaavn with exact clean title + artist
+  const saavnResults = await searchJioSaavnDeduplicated(query, 1);
+  if (saavnResults.length > 0 && saavnResults[0].audioUrl) {
+    return {
+      ...track,
+      audioUrl: saavnResults[0].audioUrl,
+      album: saavnResults[0].album || track.album,
+      image: saavnResults[0].image || track.image
+    };
+  }
+
+  // 2. Try JioSaavn with song title alone
+  const titleResults = await searchJioSaavnDeduplicated(track.title, 1);
+  if (titleResults.length > 0 && titleResults[0].audioUrl) {
+    return {
+      ...track,
+      audioUrl: titleResults[0].audioUrl,
+      album: titleResults[0].album || track.album,
+      image: titleResults[0].image || track.image
+    };
+  }
+
+  // 3. Fallback to Apple Global iTunes
+  try {
+    const itunesRes = await fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`
+    );
+    if (itunesRes.ok) {
+      const itunesData = await itunesRes.json();
+      if (itunesData.results && itunesData.results.length > 0) {
+        const item = itunesData.results[0];
+        return {
+          ...track,
+          audioUrl: item.previewUrl,
+          image: item.artworkUrl100 ? item.artworkUrl100.replace("100x100bb", "600x600bb") : track.image
+        };
+      }
+    }
+  } catch (e) {}
+
+  return track;
+}
+
 async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
   if (!track || !track.audioUrl) {
     if (loadingMsgId) {
       await tgApi(botToken, "deleteMessage", { chat_id: chatId, message_id: loadingMsgId });
     }
+    const ytUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(track?.title + " " + track?.artist)}`;
     await tgApi(botToken, "sendMessage", {
       chat_id: chatId,
-      text: "⚠️ Could not fetch the audio stream for this track. Please try another version from the list!"
+      text: `⚠️ Could not fetch direct 320kbps audio for *${escapeMd(track?.title || "Track")}*.\n\nYou can listen directly on YouTube:`,
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [[{ text: "▶️ Listen on YouTube", url: ytUrl }]]
+      }
     });
     return;
   }
@@ -581,31 +720,9 @@ async function sendPlayableMp3(botToken, chatId, loadingMsgId, track) {
   });
 }
 
-// Accurate Lyrics Engine (JioSaavn Official First, then LRCLIB with Strict Matching)
+// Accurate Lyrics Engine (Matches clean Song + Artist on LRCLIB and JioSaavn)
 async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
-  // 1. Check Official Record-Label Lyrics on JioSaavn (Matches exact song ID)
-  if (songId && songId !== "0" && !songId.startsWith("itunes_")) {
-    const lyricsEndpoints = [
-      `https://saavn.sumit.co/api/lyrics?id=${encodeURIComponent(songId)}`,
-      `https://saavn.dev/api/lyrics?id=${encodeURIComponent(songId)}`,
-      `https://jiosaavn-api-privatecvc2.vercel.app/lyrics?id=${encodeURIComponent(songId)}`,
-      `https://saavnapi-nine.vercel.app/lyrics/?query=${encodeURIComponent(songId)}`
-    ];
-
-    for (const ep of lyricsEndpoints) {
-      try {
-        const res = await fetch(ep);
-        if (!res.ok) continue;
-        const data = await res.json();
-        const rawLyrics = data.data?.lyrics || data.lyrics || "";
-        if (rawLyrics && typeof rawLyrics === "string" && rawLyrics.trim().length > 10) {
-          return cleanHtmlEntities(rawLyrics.replace(/<br\s*\/?>/gi, "\n"));
-        }
-      } catch (e) {}
-    }
-  }
-
-  // 2. Query LRCLIB with Song + Singer (Prevents wrong generic song matches)
+  // 1. LRCLIB Search with Clean Song Title + Artist
   try {
     const cleanTitle = songTitle.replace(/\(.*?\)|\[.*?\]/g, "").trim();
     const lrcQuery = songArtist && songArtist !== "Artist"
@@ -629,6 +746,27 @@ async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
     }
   } catch (e) {}
 
+  // 2. JioSaavn Official Records
+  if (songId && !songId.startsWith("yt_") && !songId.startsWith("itunes_")) {
+    const lyricsEndpoints = [
+      `https://saavn.sumit.co/api/lyrics?id=${encodeURIComponent(songId)}`,
+      `https://saavn.dev/api/lyrics?id=${encodeURIComponent(songId)}`,
+      `https://jiosaavn-api-privatecvc2.vercel.app/lyrics?id=${encodeURIComponent(songId)}`
+    ];
+
+    for (const ep of lyricsEndpoints) {
+      try {
+        const res = await fetch(ep);
+        if (!res.ok) continue;
+        const data = await res.json();
+        const rawLyrics = data.data?.lyrics || data.lyrics || "";
+        if (rawLyrics && typeof rawLyrics === "string" && rawLyrics.trim().length > 10) {
+          return cleanHtmlEntities(rawLyrics.replace(/<br\s*\/?>/gi, "\n"));
+        }
+      } catch (e) {}
+    }
+  }
+
   // 3. Dynamic Gemini Fallback
   if (geminiKey && !geminiKey.includes("PASTE_YOUR")) {
     try {
@@ -645,7 +783,7 @@ async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
                   {
                     parts: [
                       {
-                        text: `Provide the main chorus and verses for the song "${songTitle}" by "${songArtist}". Reply with ONLY clean lyrics formatted with line breaks, without intro or commentary.`
+                        text: `Provide the main chorus and verses for the song "${songTitle}" by "${songArtist}". Reply with ONLY clean lyrics formatted with line breaks, without conversational intro or commentary.`
                       }
                     ]
                   }
@@ -667,16 +805,11 @@ async function getAccurateLyrics(songId, songTitle, songArtist, geminiKey) {
   return "Verified lyrics are not available for this track yet. Try another version from the list!";
 }
 
-// Search with Intelligent Deduplication (Filters out identical remake duplicates)
-async function searchUniversalSongsDeduplicated(query, limit = 5) {
-  const rawList = [];
-
-  // 1. Primary JioSaavn CDNs
+async function searchJioSaavnDeduplicated(query, limit = 5) {
   const saavnEndpoints = [
     `https://saavn.sumit.co/api/search/songs?query=${encodeURIComponent(query)}&limit=15`,
     `https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=15`,
-    `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=15`,
-    `https://saavnapi-nine.vercel.app/result/?query=${encodeURIComponent(query)}`
+    `https://jiosaavn-api-privatecvc2.vercel.app/search/songs?query=${encodeURIComponent(query)}&limit=15`
   ];
 
   for (const endpoint of saavnEndpoints) {
@@ -689,79 +822,24 @@ async function searchUniversalSongsDeduplicated(query, limit = 5) {
         : (json.data?.results || json.results || []);
 
       if (list.length > 0) {
+        const unique = [];
+        const seen = new Set();
         for (const item of list) {
           const parsed = normalizeSaavnSong(item);
-          if (parsed && parsed.audioUrl) rawList.push(parsed);
-        }
-        if (rawList.length > 0) break;
-      }
-    } catch (e) {}
-  }
-
-  // 2. Global iTunes Search for English / Pop / Non-Indian Tracks
-  try {
-    const itunesRes = await fetch(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=10`
-    );
-    if (itunesRes.ok) {
-      const itunesData = await itunesRes.json();
-      if (itunesData.results && itunesData.results.length > 0) {
-        for (const item of itunesData.results) {
-          if (item.previewUrl) {
-            rawList.push({
-              id: `itunes_${item.trackId}`,
-              title: item.trackName,
-              artist: item.artistName,
-              album: item.collectionName || "",
-              year: item.releaseDate ? item.releaseDate.slice(0, 4) : "",
-              duration: item.trackTimeMillis ? Math.round(item.trackTimeMillis / 1000) : 0,
-              image: item.artworkUrl100 ? item.artworkUrl100.replace("100x100bb", "600x600bb") : null,
-              audioUrl: item.previewUrl
-            });
+          if (parsed && parsed.audioUrl) {
+            const sig = parsed.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 15);
+            if (!seen.has(sig)) {
+              seen.add(sig);
+              unique.push(parsed);
+            }
           }
+          if (unique.length >= limit) break;
         }
-      }
-    }
-  } catch (e) {}
-
-  // 3. Deduplication Algorithm: Merge duplicate remakes into distinct versions
-  const uniqueSongs = [];
-  const seenSignatures = new Set();
-
-  for (const song of rawList) {
-    // Create normalized signature: simplified title + first artist name
-    const simplifiedTitle = song.title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 15);
-    const simplifiedArtist = song.artist.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8);
-    const signature = `${simplifiedTitle}_${simplifiedArtist}`;
-
-    if (!seenSignatures.has(signature)) {
-      seenSignatures.add(signature);
-      uniqueSongs.push(song);
-    }
-    if (uniqueSongs.length >= limit) break;
-  }
-
-  return uniqueSongs;
-}
-
-async function fetchSaavnSongById(songId) {
-  const endpoints = [
-    `https://saavn.sumit.co/api/songs/${encodeURIComponent(songId)}`,
-    `https://saavn.dev/api/songs/${encodeURIComponent(songId)}`
-  ];
-  for (const ep of endpoints) {
-    try {
-      const res = await fetch(ep);
-      if (!res.ok) continue;
-      const json = await res.json();
-      const songObj = Array.isArray(json.data) ? json.data[0] : (json.data || json[0]);
-      if (songObj) {
-        const item = normalizeSaavnSong(songObj);
-        if (item && item.audioUrl) return item;
+        if (unique.length > 0) return unique;
       }
     } catch (e) {}
   }
-  return null;
+  return [];
 }
 
 function normalizeSaavnSong(song) {
@@ -784,7 +862,6 @@ function normalizeSaavnSong(song) {
 
   const id = String(song.id || Math.random().toString(36).slice(2, 10));
   const title = cleanHtmlEntities(song.name || song.title || song.song || "Track");
-  
   let artist = cleanHtmlEntities(
     song.artists?.primary?.map(a => a.name).join(", ") ||
     song.primaryArtists ||
@@ -800,7 +877,6 @@ function normalizeSaavnSong(song) {
   return { id, title, artist, album, year, duration, image: bestImage, audioUrl: bestAudio };
 }
 
-// Smart YouTube Title Extractor (Splits at | and - to extract clean Song + Artist)
 async function extractTitleFromUrl(text) {
   const urlMatch = text.match(/https?:\/\/[^\s]+/i);
   if (!urlMatch) return null;
@@ -815,7 +891,6 @@ async function extractTitleFromUrl(text) {
     if (res.ok) {
       const data = await res.json();
       if (data.title) {
-        // Split by | or - to extract the actual song and artist name
         const cleanRaw = data.title
           .replace(/#[^\s#]+/g, "")
           .replace(/\(official.*?\)|\[official.*?\]/gi, "")
@@ -824,44 +899,10 @@ async function extractTitleFromUrl(text) {
 
         const segments = cleanRaw.split(/[|\-•]/).map(s => s.trim()).filter(s => s.length > 1);
         if (segments.length >= 2) {
-          // Takes "Jhoot" + "Harmeeet" from "Jhoot | Harmeeet | Hustle 5"
           return `${segments[0]} ${segments[1]}`;
         }
         return segments[0] || cleanRaw;
       }
-    }
-  } catch (e) {}
-  return null;
-}
-
-async function guessSongFromLyricsWithGemini(geminiKey, text) {
-  try {
-    const models = await getAvailableFlashModels(geminiKey);
-    for (const model of models) {
-      try {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [
-                    {
-                      text: `Identify the exact song title and singer from this lyric or query: "${text}". Reply with ONLY the song title and artist name (max 6 words), nothing else.`
-                    }
-                  ]
-                }
-              ]
-            })
-          }
-        );
-        if (!res.ok) continue;
-        const data = await res.json();
-        const output = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
-        if (output) return output;
-      } catch (e) {}
     }
   } catch (e) {}
   return null;
